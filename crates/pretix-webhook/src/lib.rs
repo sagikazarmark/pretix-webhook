@@ -122,10 +122,11 @@ impl Debug for BasicAuthCredential {
     }
 }
 
-/// Organizer and event policy for a webhook endpoint.
+/// Authentication and organizer/event policy for a webhook endpoint.
 #[derive(Clone, Debug, Default)]
 pub struct WebhookConfig {
     organizers: BTreeMap<String, AllowedEvents>,
+    unrestricted: bool,
     credentials: Vec<BasicAuthCredential>,
 }
 
@@ -147,9 +148,18 @@ impl WebhookConfig {
         Self::default()
     }
 
+    /// Clears configured restrictions and allows every organizer and event.
+    #[must_use]
+    pub fn allow_everything(mut self) -> Self {
+        self.organizers.clear();
+        self.unrestricted = true;
+        self
+    }
+
     /// Allows organizer-level payloads and one event for an organizer.
     #[must_use]
     pub fn allow_event(mut self, organizer: impl Into<String>, event: impl Into<String>) -> Self {
+        self.unrestricted = false;
         let events = self.organizers.entry(organizer.into()).or_default();
         if let AllowedEvents::Only(events) = events {
             events.insert(event.into());
@@ -160,6 +170,7 @@ impl WebhookConfig {
     /// Allows organizer-level payloads and every event for an organizer.
     #[must_use]
     pub fn allow_all_events(mut self, organizer: impl Into<String>) -> Self {
+        self.unrestricted = false;
         self.organizers.insert(organizer.into(), AllowedEvents::All);
         self
     }
@@ -175,6 +186,9 @@ impl WebhookConfig {
     }
 
     fn allows(&self, event: &WebhookEvent) -> bool {
+        if self.unrestricted {
+            return true;
+        }
         let Some(organizer) = event.organizer_slug() else {
             return false;
         };

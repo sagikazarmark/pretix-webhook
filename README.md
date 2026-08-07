@@ -92,7 +92,7 @@ Every option has an environment equivalent:
 | --- | --- | --- |
 | `--bind` | `PRETIX_WEBHOOK_BIND` | `127.0.0.1:3000` |
 | `--path` | `PRETIX_WEBHOOK_PATH` | `/webhook` |
-| `--allow` | `PRETIX_WEBHOOK_ALLOW` | required |
+| `--allow` | `PRETIX_WEBHOOK_ALLOW` | all organizers and events |
 | `--credential` | `PRETIX_WEBHOOK_CREDENTIALS` | authentication disabled |
 
 Use semicolons between multiple values in environment variables:
@@ -102,6 +102,9 @@ PRETIX_WEBHOOK_ALLOW='acmecorp/democon;another-organizer/*' \
 PRETIX_WEBHOOK_CREDENTIALS='old:secret;current:new-secret' \
 cargo run -p pretix-webhook-cli --bin pretix-webhook
 ```
+
+If no allowlist is supplied, the CLI prints a warning and accepts webhooks for
+all organizers and events.
 
 Build the CLI with structured tracing instead of default logging:
 

@@ -84,6 +84,56 @@ async fn unsupported_organizers_and_events_are_hidden_with_not_found() {
 }
 
 #[tokio::test]
+async fn explicit_unrestricted_policy_accepts_every_organizer_and_event() {
+    let app = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new().allow_everything(),
+    );
+    let request = Request::post("/")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{
+                "notification_id": 1,
+                "organizer": "previously-unknown",
+                "event": "future-event",
+                "action": "pretix.event.changed"
+            }"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn restrictions_added_after_allow_everything_replace_prior_restrictions() {
+    let app = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new()
+            .allow_event("old", "old")
+            .allow_everything()
+            .allow_event("new", "new"),
+    );
+
+    for (organizer, event, expected) in [
+        ("old", "old", StatusCode::NOT_FOUND),
+        ("new", "new", StatusCode::NO_CONTENT),
+    ] {
+        let payload = format!(
+            r#"{{
+                "notification_id": 1,
+                "organizer": "{organizer}",
+                "event": "{event}",
+                "action": "pretix.event.changed"
+            }}"#
+        );
+        let request = Request::post("/").body(Body::from(payload)).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn organizer_can_allow_all_current_and_future_events() {
     let app = webhook_router(
         RecordingHandler::default(),

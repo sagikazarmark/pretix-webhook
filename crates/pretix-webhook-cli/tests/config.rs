@@ -62,3 +62,31 @@ async fn reads_server_policy_and_credentials_from_environment() {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }
+
+#[tokio::test]
+async fn allowlist_is_optional_and_defaults_to_unrestricted() {
+    let config = temp_env::with_vars(
+        [
+            ("PRETIX_WEBHOOK_ALLOW", None::<&str>),
+            ("PRETIX_WEBHOOK_CREDENTIALS", None::<&str>),
+        ],
+        || Config::try_parse_from(["pretix-webhook"]).unwrap(),
+    );
+
+    assert!(config.is_unrestricted());
+    assert!(config.allowed_targets().is_empty());
+
+    let app = webhook_router(NoopHandler, config.webhook_config());
+    let request = Request::post("/")
+        .body(Body::from(
+            r#"{
+                "notification_id": 1,
+                "organizer": "any-organizer",
+                "event": "any-event",
+                "action": "pretix.event.changed"
+            }"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}

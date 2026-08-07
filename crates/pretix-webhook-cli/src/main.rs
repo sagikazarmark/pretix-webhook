@@ -8,6 +8,9 @@ use pretix_webhook_cli::Config;
 async fn main() -> Result<(), Box<dyn Error>> {
     init_observability();
     let config = Config::parse();
+    if config.is_unrestricted() {
+        warn_unrestricted();
+    }
     let bind = config.bind();
     let path = config.path().to_owned();
     let app = webhook_router_at(&path, selected_handler(), config.webhook_config());
@@ -55,6 +58,10 @@ fn init_observability() {}
 #[cfg(feature = "tracing")]
 fn announce_listener(bind: std::net::SocketAddr, path: &str) {
     tracing::info!(%bind, %path, "pretix webhook receiver listening");
+}
+
+fn warn_unrestricted() {
+    eprintln!("warning: no allowlist configured; accepting all events from all organizers");
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]

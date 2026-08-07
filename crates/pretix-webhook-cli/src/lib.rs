@@ -83,12 +83,7 @@ pub struct Config {
     path: String,
 
     /// Allowed ORGANIZER/EVENT pair; use ORGANIZER/* for all events.
-    #[arg(
-        long = "allow",
-        env = "PRETIX_WEBHOOK_ALLOW",
-        value_delimiter = ';',
-        required = true
-    )]
+    #[arg(long = "allow", env = "PRETIX_WEBHOOK_ALLOW", value_delimiter = ';')]
     allowed_targets: Vec<AllowedTarget>,
 
     /// Accepted USERNAME:PASSWORD pair. May be supplied more than once.
@@ -117,8 +112,17 @@ impl Config {
     }
 
     #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed_targets.is_empty()
+    }
+
+    #[must_use]
     pub fn webhook_config(&self) -> WebhookConfig {
-        let mut config = WebhookConfig::new();
+        let mut config = if self.is_unrestricted() {
+            WebhookConfig::new().allow_everything()
+        } else {
+            WebhookConfig::new()
+        };
         for target in &self.allowed_targets {
             config = match target {
                 AllowedTarget::Event { organizer, event } => config.allow_event(organizer, event),
