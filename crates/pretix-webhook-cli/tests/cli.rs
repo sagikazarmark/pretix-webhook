@@ -53,6 +53,31 @@ fn rejects_invalid_endpoint_configuration_before_binding() {
     }
 }
 
+#[test]
+fn credential_startup_diagnostics_identify_the_reference_without_leaking_its_value() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = listener.local_addr().unwrap().to_string();
+    let config_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/credential-multi.toml"
+    );
+    let output = command(&bind)
+        .args(["--config", config_path])
+        .env("FIRST_OLD_CREDENTIAL", "private-user-without-a-password")
+        .env("FIRST_CURRENT_CREDENTIAL", "valid:credential")
+        .env("SECOND_CREDENTIAL", "valid:credential")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr.contains("/incoming/first"), "{stderr:?}");
+    assert!(stderr.contains("FIRST_OLD_CREDENTIAL"), "{stderr:?}");
+    assert!(!stderr.contains("private-user-without-a-password"));
+    assert!(!stderr.contains("valid:credential"));
+    assert!(!stderr.contains("Address already in use"));
+}
+
 fn command(bind: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pretix-webhook"));
     command

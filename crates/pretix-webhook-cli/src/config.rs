@@ -204,17 +204,30 @@ impl Config {
                     &format!("webhooks entry {route_number}: duplicate webhook path {path:?}"),
                 ));
             }
-            if !webhook.credential_env.is_empty() {
-                return Err(invalid_toml_config(
-                    config_path,
-                    &format!(
-                        "webhooks entry {route_number} ({path:?}): credential_env references are not supported yet"
-                    ),
-                ));
-            }
-
             let unrestricted =
                 webhook.allow_organizers.is_empty() && webhook.allow_events.is_empty();
+            let unauthenticated = webhook.credential_env.is_empty();
+            let mut credentials = Vec::with_capacity(webhook.credential_env.len());
+            for variable in webhook.credential_env {
+                let value = std::env::var(&variable).map_err(|_| {
+                    invalid_toml_config(
+                        config_path,
+                        &format!(
+                            "webhooks entry {route_number} ({path:?}): credential environment variable {variable:?} is missing or not valid Unicode"
+                        ),
+                    )
+                })?;
+                let credential = value.parse::<Credential>().map_err(|error| {
+                    invalid_toml_config(
+                        config_path,
+                        &format!(
+                            "webhooks entry {route_number} ({path:?}): credential environment variable {variable:?} is invalid: {error}"
+                        ),
+                    )
+                })?;
+                credentials.push(credential.0);
+            }
+
             let mut webhook_config = WebhookConfig::new();
             for organizer in webhook.allow_organizers {
                 webhook_config = webhook_config.allow_organizer(organizer).map_err(|error| {
@@ -232,12 +245,15 @@ impl Config {
                     )
                 })?;
             }
+            if !unauthenticated {
+                webhook_config = webhook_config.require_basic_auth(credentials);
+            }
 
             endpoints.push(EffectiveEndpoint {
                 path,
                 webhook_config,
                 unrestricted,
-                unauthenticated: true,
+                unauthenticated,
             });
         }
 

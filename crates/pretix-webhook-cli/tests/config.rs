@@ -15,6 +15,155 @@ use tower::ServiceExt;
 static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
+async fn toml_routes_resolve_independent_rotatable_credentials() {
+    let environment = lock_environment();
+    let config = temp_env::with_vars(
+        [
+            ("FIRST_OLD_CREDENTIAL", Some("old:secret")),
+            ("FIRST_CURRENT_CREDENTIAL", Some("current:new:secret")),
+            (
+                "SECOND_CREDENTIAL",
+                Some("route-two-user:route-two-password"),
+            ),
+        ],
+        || parse_multi(&fixture("credential-multi.toml"), &[]),
+    );
+    drop(environment);
+
+    let debug = format!("{config:?}");
+    for secret_part in [
+        "old",
+        "secret",
+        "current",
+        "new",
+        "route-two-user",
+        "route-two-password",
+    ] {
+        assert!(!debug.contains(secret_part), "secret leaked in {debug:?}");
+    }
+    assert_eq!(
+        config
+            .endpoints()
+            .iter()
+            .map(pretix_webhook_cli::EffectiveEndpoint::is_unauthenticated)
+            .collect::<Vec<_>>(),
+        [false, false, true, true]
+    );
+
+    let mut app = axum::Router::new();
+    for endpoint in config.into_parts().1 {
+        let (path, webhook_config) = endpoint.into_parts();
+        app = app.merge(webhook_router_at(&path, NoopHandler, webhook_config).unwrap());
+    }
+
+    for authorization in ["Basic b2xkOnNlY3JldA==", "Basic Y3VycmVudDpuZXc6c2VjcmV0"] {
+        let response = app
+            .clone()
+            .oneshot(authorized_request(
+                "/incoming/first",
+                authorization,
+                event_payload("acmecorp", "democon"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    let wrong_route = app
+        .clone()
+        .oneshot(authorized_request(
+            "/incoming/second",
+            "Basic b2xkOnNlY3JldA==",
+            event_payload("acmecorp", "democon"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_route.status(), StatusCode::UNAUTHORIZED);
+
+    let second_route = app
+        .clone()
+        .oneshot(authorized_request(
+            "/incoming/second",
+            "Basic cm91dGUtdHdvLXVzZXI6cm91dGUtdHdvLXBhc3N3b3Jk",
+            event_payload("acmecorp", "democon"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second_route.status(), StatusCode::NO_CONTENT);
+
+    for path in ["/incoming/empty-references", "/incoming/omitted-references"] {
+        let request = Request::post(path)
+            .body(Body::from(event_payload("acmecorp", "democon")))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    let malformed = app
+        .oneshot(authorized_request(
+            "/incoming/second",
+            "Basic b2xkOnNlY3JldA==",
+            "not json".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        malformed.headers().get("www-authenticate").unwrap(),
+        "Basic realm=\"pretix-webhook\""
+    );
+}
+
+#[test]
+fn invalid_credential_references_fail_closed_without_disclosing_values() {
+    let _environment = lock_environment();
+    let config_path = fixture("credential-multi.toml");
+
+    for invalid_value in [
+        None,
+        Some(""),
+        Some("leaked-username"),
+        Some(":leaked-password"),
+        Some("leaked-user:"),
+    ] {
+        let error = temp_env::with_vars(
+            [
+                ("FIRST_OLD_CREDENTIAL", invalid_value),
+                ("FIRST_CURRENT_CREDENTIAL", Some("valid:credential")),
+                ("SECOND_CREDENTIAL", Some("valid:credential")),
+            ],
+            || {
+                Config::try_parse_from(["pretix-webhook", "--config", config_path.as_str()])
+                    .unwrap()
+                    .into_effective()
+                    .unwrap_err()
+            },
+        );
+
+        for diagnostic in [error.to_string(), format!("{error:?}")] {
+            assert!(diagnostic.contains("webhooks entry 1"), "{diagnostic:?}");
+            assert!(diagnostic.contains("/incoming/first"), "{diagnostic:?}");
+            assert!(
+                diagnostic.contains("FIRST_OLD_CREDENTIAL"),
+                "{diagnostic:?}"
+            );
+            if let Some(value) = invalid_value.filter(|value| !value.is_empty()) {
+                assert!(
+                    !diagnostic.contains(value),
+                    "value leaked in {diagnostic:?}"
+                );
+            }
+            for secret_part in ["leaked-username", "leaked-password", "leaked-user"] {
+                assert!(
+                    !diagnostic.contains(secret_part),
+                    "secret leaked in {diagnostic:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn explicit_toml_config_builds_independently_filtered_public_routes() {
     let environment = lock_environment();
     let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/multi.toml");
@@ -436,6 +585,13 @@ fn event_payload(organizer: &str, event: &str) -> String {
             "action": "pretix.event.changed"
         }}"#
     )
+}
+
+fn authorized_request(path: &str, authorization: &str, body: String) -> Request<Body> {
+    Request::post(path)
+        .header("authorization", authorization)
+        .body(Body::from(body))
+        .unwrap()
 }
 
 fn fixture(name: &str) -> String {
