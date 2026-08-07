@@ -8,7 +8,11 @@ use axum::{
 };
 use pretix_webhook_events::WebhookEvent;
 
-use crate::{config::WebhookConfig, handler::WebhookHandler};
+use crate::{
+    config::WebhookConfig,
+    handler::WebhookHandler,
+    path::{WebhookPathError, validate_absolute_webhook_path},
+};
 
 #[derive(Clone)]
 struct AppState<H> {
@@ -23,13 +27,30 @@ pub fn webhook_router<H>(handler: H, config: WebhookConfig) -> Router
 where
     H: WebhookHandler,
 {
-    webhook_router_at("/", handler, config)
+    build_webhook_router("/", handler, config)
 }
 
 /// Builds a router with a webhook endpoint at an exact path.
 ///
-/// The path must be a valid static Axum route beginning with `/`.
-pub fn webhook_router_at<H>(path: &str, handler: H, config: WebhookConfig) -> Router
+/// Returns an error unless `path` is an absolute path containing only static,
+/// URL-unreserved ASCII segments.
+///
+/// # Errors
+///
+/// Returns [`WebhookPathError`] when `path` is invalid.
+pub fn webhook_router_at<H>(
+    path: &str,
+    handler: H,
+    config: WebhookConfig,
+) -> Result<Router, WebhookPathError>
+where
+    H: WebhookHandler,
+{
+    validate_absolute_webhook_path(path)?;
+    Ok(build_webhook_router(path, handler, config))
+}
+
+fn build_webhook_router<H>(path: &str, handler: H, config: WebhookConfig) -> Router
 where
     H: WebhookHandler,
 {

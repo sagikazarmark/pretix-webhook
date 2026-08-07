@@ -46,7 +46,7 @@ let config = WebhookConfig::new()
     .allow_event("acmecorp", "democon")
     .allow_all_events("another-organizer");
 
-let router = webhook_router_at("/webhook", handler, config);
+let router = webhook_router_at("/webhook", handler, config).expect("valid static path");
 # let _ = router;
 ```
 

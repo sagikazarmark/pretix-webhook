@@ -258,7 +258,8 @@ async fn router_can_mount_the_endpoint_at_an_exact_path() {
         "/hooks/pretix",
         RecordingHandler::default(),
         WebhookConfig::new().allow_event("acmecorp", "democon"),
-    );
+    )
+    .unwrap();
     let request = Request::post("/hooks/pretix")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -271,6 +272,12 @@ async fn router_can_mount_the_endpoint_at_an_exact_path() {
         ))
         .unwrap();
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    for path in ["/hooks/pretix/", "/hooks/pretix/more", "/hooks"] {
+        let request = Request::post(path).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let bind = config.bind();
     let path = config.path().to_owned();
-    let app = webhook_router_at(&path, selected_handler(), config.webhook_config());
+    let app = webhook_router_at(&path, selected_handler(), config.webhook_config())?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     announce_listener(bind, &path);

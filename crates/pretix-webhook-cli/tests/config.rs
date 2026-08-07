@@ -90,3 +90,28 @@ async fn allowlist_is_optional_and_defaults_to_unrestricted() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
+
+#[test]
+fn command_line_paths_use_the_library_static_path_grammar() {
+    for path in ["/", "/hooks/AZaz09-._~"] {
+        let config = Config::try_parse_from(["pretix-webhook", "--path", path]).unwrap();
+        assert_eq!(config.path(), path);
+    }
+
+    for path in [
+        "hooks",
+        "/hooks/",
+        "/hooks//pretix",
+        "/hooks/./pretix",
+        "/hooks/{organizer}",
+        "/hooks?enabled=true",
+        "/hooks%2Fpretix",
+        "/hooks pretix",
+    ] {
+        let error = Config::try_parse_from(["pretix-webhook", "--path", path]).unwrap_err();
+        assert!(
+            error.to_string().contains(path),
+            "error did not identify {path:?}: {error}"
+        );
+    }
+}

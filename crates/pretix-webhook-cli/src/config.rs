@@ -5,7 +5,7 @@ use std::{
 };
 
 use clap::Parser;
-use pretix_webhook::{BasicAuthCredential, WebhookConfig};
+use pretix_webhook::{BasicAuthCredential, WebhookConfig, validate_absolute_webhook_path};
 
 use crate::allowed_target::AllowedTarget;
 
@@ -110,8 +110,6 @@ impl Config {
 }
 
 fn parse_path(value: &str) -> Result<String, String> {
-    if !value.starts_with('/') || value.contains(['?', '#', '{', '}']) {
-        return Err("path must be an absolute static URL path".to_owned());
-    }
+    validate_absolute_webhook_path(value).map_err(|error| error.to_string())?;
     Ok(value.to_owned())
 }
