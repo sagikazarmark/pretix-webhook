@@ -7,13 +7,13 @@ use pretix_webhook_cli::Config;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     init_observability();
-    let config = Config::parse();
-    if config.is_unrestricted() {
+    let config = Config::parse().into_effective()?;
+    if config.endpoint().is_unrestricted() {
         warn_unrestricted();
     }
-    let bind = config.bind();
-    let path = config.path().to_owned();
-    let app = webhook_router_at(&path, selected_handler(), config.webhook_config()?)?;
+    let (bind, endpoint) = config.into_parts();
+    let (path, webhook_config) = endpoint.into_parts();
+    let app = webhook_router_at(&path, selected_handler(), webhook_config)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     announce_listener(bind, &path);

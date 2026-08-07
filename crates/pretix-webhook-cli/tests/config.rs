@@ -22,18 +22,23 @@ async fn reads_server_policy_and_credentials_from_environment() {
                 Some("old:secret;current:new-secret"),
             ),
         ],
-        || Config::try_parse_from(["pretix-webhook"]).unwrap(),
+        || {
+            Config::try_parse_from(["pretix-webhook"])
+                .unwrap()
+                .into_effective()
+                .unwrap()
+        },
     );
 
     assert_eq!(
         config.bind(),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8787)
     );
-    assert_eq!(config.path(), "/hooks/pretix");
-    assert_eq!(config.allowed_organizers(), ["acmecorp", "other"]);
-    assert_eq!(config.allowed_events(), ["democon", "conference"]);
+    assert_eq!(config.endpoint().path(), "/hooks/pretix");
 
-    let app = webhook_router(NoopHandler, config.webhook_config().unwrap());
+    let (_, endpoint) = config.into_parts();
+    let (_, webhook_config) = endpoint.into_parts();
+    let app = webhook_router(NoopHandler, webhook_config);
     let payload = r#"{
         "notification_id": 1,
         "organizer": "acmecorp",
@@ -44,14 +49,7 @@ async fn reads_server_policy_and_credentials_from_environment() {
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    for authorization in ["Basic b2xkOnNlY3JldA==", "Basic Y3VycmVudDpuZXctc2VjcmV0"] {
-        let request = Request::post("/")
-            .header("authorization", authorization)
-            .body(Body::from(payload))
-            .unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    }
+    assert_credentials_accepted(app, payload).await;
 }
 
 #[tokio::test]
@@ -62,14 +60,20 @@ async fn filters_are_optional_and_default_to_unrestricted() {
             ("PRETIX_WEBHOOK_ALLOW_EVENTS", None::<&str>),
             ("PRETIX_WEBHOOK_CREDENTIALS", None::<&str>),
         ],
-        || Config::try_parse_from(["pretix-webhook"]).unwrap(),
+        || {
+            Config::try_parse_from(["pretix-webhook"])
+                .unwrap()
+                .into_effective()
+                .unwrap()
+        },
     );
 
-    assert!(config.is_unrestricted());
-    assert!(config.allowed_organizers().is_empty());
-    assert!(config.allowed_events().is_empty());
+    assert!(config.endpoint().is_unrestricted());
+    assert!(config.endpoint().is_unauthenticated());
 
-    let app = webhook_router(NoopHandler, config.webhook_config().unwrap());
+    let (_, endpoint) = config.into_parts();
+    let (_, webhook_config) = endpoint.into_parts();
+    let app = webhook_router(NoopHandler, webhook_config);
     let request = Request::post("/")
         .body(Body::from(
             r#"{
@@ -85,7 +89,26 @@ async fn filters_are_optional_and_default_to_unrestricted() {
 }
 
 #[test]
-fn organizer_and_event_flags_are_independently_repeatable() {
+fn omitted_and_explicit_default_paths_have_the_same_effective_endpoint() {
+    temp_env::with_var("PRETIX_WEBHOOK_PATH", None::<&str>, || {
+        let defaulted = Config::try_parse_from(["pretix-webhook"]).unwrap();
+        assert_eq!(defaulted.path_input(), None);
+        assert_eq!(
+            defaulted.into_effective().unwrap().endpoint().path(),
+            "/webhook"
+        );
+
+        let explicit = Config::try_parse_from(["pretix-webhook", "--path", "/webhook"]).unwrap();
+        assert_eq!(explicit.path_input(), Some("/webhook"));
+        assert_eq!(
+            explicit.into_effective().unwrap().endpoint().path(),
+            "/webhook"
+        );
+    });
+}
+
+#[tokio::test]
+async fn organizer_event_and_credential_flags_are_independently_repeatable() {
     let config = Config::try_parse_from([
         "pretix-webhook",
         "--allow-organizer",
@@ -96,11 +119,25 @@ fn organizer_and_event_flags_are_independently_repeatable() {
         "other",
         "--allow-event",
         "conference",
+        "--credential",
+        "old:secret",
+        "--credential",
+        "current:new-secret",
     ])
+    .unwrap()
+    .into_effective()
     .unwrap();
 
-    assert_eq!(config.allowed_organizers(), ["acmecorp", "other"]);
-    assert_eq!(config.allowed_events(), ["democon", "conference"]);
+    let (_, endpoint) = config.into_parts();
+    let (_, webhook_config) = endpoint.into_parts();
+    let app = webhook_router(NoopHandler, webhook_config);
+    let payload = r#"{
+        "notification_id": 1,
+        "organizer": "other",
+        "event": "conference",
+        "action": "pretix.event.changed"
+    }"#;
+    assert_credentials_accepted(app, payload).await;
 }
 
 #[test]
@@ -110,9 +147,12 @@ fn combined_allowlist_option_and_environment_variable_are_removed() {
     assert!(error.to_string().contains("--allow"));
 
     let config = temp_env::with_var("PRETIX_WEBHOOK_ALLOW", Some("acmecorp/democon"), || {
-        Config::try_parse_from(["pretix-webhook"]).unwrap()
+        Config::try_parse_from(["pretix-webhook"])
+            .unwrap()
+            .into_effective()
+            .unwrap()
     });
-    assert!(config.is_unrestricted());
+    assert!(config.endpoint().is_unrestricted());
 }
 
 #[test]
@@ -124,7 +164,21 @@ fn empty_and_whitespace_padded_filter_values_are_rejected() {
         ("--allow-event", "padded "),
     ] {
         let config = Config::try_parse_from(["pretix-webhook", option, value]).unwrap();
-        assert!(config.webhook_config().is_err());
+        assert!(config.into_effective().is_err());
+    }
+}
+
+#[test]
+fn empty_and_malformed_credentials_are_rejected() {
+    for credential in ["", "username", ":password", "username:"] {
+        let error =
+            Config::try_parse_from(["pretix-webhook", "--credential", credential]).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("expected USERNAME:PASSWORD")
+                || message.contains("username and password must be non-empty"),
+            "unexpected error for {credential:?}: {message}"
+        );
     }
 }
 
@@ -132,7 +186,8 @@ fn empty_and_whitespace_padded_filter_values_are_rejected() {
 fn command_line_paths_use_the_library_static_path_grammar() {
     for path in ["/", "/hooks/AZaz09-._~"] {
         let config = Config::try_parse_from(["pretix-webhook", "--path", path]).unwrap();
-        assert_eq!(config.path(), path);
+        assert_eq!(config.path_input(), Some(path));
+        assert_eq!(config.into_effective().unwrap().endpoint().path(), path);
     }
 
     for path in [
@@ -150,5 +205,16 @@ fn command_line_paths_use_the_library_static_path_grammar() {
             error.to_string().contains(path),
             "error did not identify {path:?}: {error}"
         );
+    }
+}
+
+async fn assert_credentials_accepted(app: axum::Router, payload: &str) {
+    for authorization in ["Basic b2xkOnNlY3JldA==", "Basic Y3VycmVudDpuZXctc2VjcmV0"] {
+        let request = Request::post("/")
+            .header("authorization", authorization)
+            .body(Body::from(payload.to_owned()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }

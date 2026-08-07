@@ -44,10 +44,9 @@ pub struct Config {
     #[arg(
         long,
         env = "PRETIX_WEBHOOK_PATH",
-        default_value = "/webhook",
         value_parser = parse_path
     )]
-    path: String,
+    path: Option<String>,
 
     /// Allowed organizer slug. May be supplied more than once.
     #[arg(
@@ -75,55 +74,99 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the path supplied by a command-line flag or environment value.
+    ///
+    /// `None` means that loading will apply the simple-mode `/webhook` default.
+    #[must_use]
+    pub fn path_input(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    /// Resolves defaults and validates one effective simple-mode endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookFilterError`] when an organizer or event value is empty
+    /// or whitespace-padded.
+    pub fn into_effective(self) -> Result<EffectiveConfig, WebhookFilterError> {
+        let unrestricted = self.allowed_organizers.is_empty() && self.allowed_events.is_empty();
+        let unauthenticated = self.credentials.is_empty();
+        let mut webhook_config = WebhookConfig::new();
+        for organizer in self.allowed_organizers {
+            webhook_config = webhook_config.allow_organizer(organizer)?;
+        }
+        for event in self.allowed_events {
+            webhook_config = webhook_config.allow_event(event)?;
+        }
+        if !unauthenticated {
+            webhook_config = webhook_config
+                .require_basic_auth(self.credentials.into_iter().map(|credential| credential.0));
+        }
+
+        Ok(EffectiveConfig {
+            bind: self.bind,
+            endpoint: EffectiveEndpoint {
+                path: self.path.unwrap_or_else(|| "/webhook".to_owned()),
+                webhook_config,
+                unrestricted,
+                unauthenticated,
+            },
+        })
+    }
+}
+
+/// Fully resolved and validated process configuration.
+#[derive(Clone, Debug)]
+pub struct EffectiveConfig {
+    bind: SocketAddr,
+    endpoint: EffectiveEndpoint,
+}
+
+impl EffectiveConfig {
     #[must_use]
     pub fn bind(&self) -> SocketAddr {
         self.bind
     }
 
     #[must_use]
+    pub fn endpoint(&self) -> &EffectiveEndpoint {
+        &self.endpoint
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (SocketAddr, EffectiveEndpoint) {
+        (self.bind, self.endpoint)
+    }
+}
+
+/// One fully resolved and validated webhook endpoint.
+#[derive(Clone, Debug)]
+pub struct EffectiveEndpoint {
+    path: String,
+    webhook_config: WebhookConfig,
+    unrestricted: bool,
+    unauthenticated: bool,
+}
+
+impl EffectiveEndpoint {
+    #[must_use]
     pub fn path(&self) -> &str {
         &self.path
     }
 
     #[must_use]
-    pub fn allowed_organizers(&self) -> &[String] {
-        &self.allowed_organizers
-    }
-
-    #[must_use]
-    pub fn allowed_events(&self) -> &[String] {
-        &self.allowed_events
-    }
-
-    #[must_use]
     pub fn is_unrestricted(&self) -> bool {
-        self.allowed_organizers.is_empty() && self.allowed_events.is_empty()
+        self.unrestricted
     }
 
-    /// Builds the receiver policy represented by this configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WebhookFilterError`] when an organizer or event value is empty
-    /// or whitespace-padded.
-    pub fn webhook_config(&self) -> Result<WebhookConfig, WebhookFilterError> {
-        let mut config = WebhookConfig::new();
-        for organizer in &self.allowed_organizers {
-            config = config.allow_organizer(organizer)?;
-        }
-        for event in &self.allowed_events {
-            config = config.allow_event(event)?;
-        }
+    #[must_use]
+    pub fn is_unauthenticated(&self) -> bool {
+        self.unauthenticated
+    }
 
-        if self.credentials.is_empty() {
-            Ok(config)
-        } else {
-            Ok(config.require_basic_auth(
-                self.credentials
-                    .iter()
-                    .map(|credential| credential.0.clone()),
-            ))
-        }
+    #[must_use]
+    pub fn into_parts(self) -> (String, WebhookConfig) {
+        (self.path, self.webhook_config)
     }
 }
 
