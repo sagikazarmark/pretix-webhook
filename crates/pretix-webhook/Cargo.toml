@@ -1,6 +1,7 @@
 [package]
 name = "pretix-webhook"
 description = "Axum support for receiving pretix webhooks"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

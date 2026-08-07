@@ -1,4 +1,4 @@
-//! Axum support for receiving pretix webhooks.
+#![doc = include_str!("../README.md")]
 
 mod config;
 mod handler;

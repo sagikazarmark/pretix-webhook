@@ -31,98 +31,28 @@ Handlers should be idempotent.
 
 ## Library
 
-Implement `WebhookHandler` directly, or adapt an async closure with
-`handler_fn`:
+The receiver provides convenience routers for one webhook and a
+`MultiWebhookRouter` builder for multiple exact paths beneath a shared prefix.
+Each registration has independent organizer and event filters, credentials,
+and a concrete handler. The completed Axum router can be served directly or
+merged into a larger application.
 
-```rust
-use pretix_webhook::{WebhookConfig, handler_fn, webhook_router_at};
-
-let handler = handler_fn(|event| async move {
-    println!("{}: {}", event.notification_id(), event.action());
-    Ok::<_, std::convert::Infallible>(())
-});
-
-let config = WebhookConfig::new()
-    .allow_organizer("acmecorp")
-    .expect("valid organizer slug")
-    .allow_event("democon")
-    .expect("valid event slug");
-
-let router = webhook_router_at("/webhook", handler, config).expect("valid static path");
-# let _ = router;
-```
-
-Add rotating Basic authentication credentials in the HTTP layer:
-
-```rust
-# use pretix_webhook::{BasicAuthCredential, WebhookConfig};
-let config = WebhookConfig::new()
-    .allow_organizer("acmecorp")
-    .expect("valid organizer slug")
-    .allow_event("democon")
-    .expect("valid event slug")
-    .require_basic_auth([
-        BasicAuthCredential::new("old-user", "old-password"),
-        BasicAuthCredential::new("current-user", "current-password"),
-    ]);
-# let _ = config;
-```
-
-The endpoint returns `204` on success, `400` for malformed payloads, `401` for
-failed authentication, `404` for unsupported organizers/events, and `500` when
-the handler fails so pretix retries delivery.
-
-Optional library features provide terminal handlers:
-
-- `log`: `LogHandler` emits semantic key-values through the `log` facade.
-- `tracing`: `TracingHandler` emits structured semantic fields through
-  `tracing`.
-
-`NoopHandler` and `handler_fn` are always available.
+See the [receiver library guide] for checked examples covering single and
+multi-webhook builders, per-route handlers and credentials, independent
+filters, and Axum composition. The receiver's normal dependency graph is
+Tokio-free; applications choose the runtime used to serve the router.
 
 ## CLI
 
-The CLI enables the `log` feature by default:
+The server supports a simple single-webhook mode through flags or environment
+variables and an explicit `--config` TOML mode for multiple routes. TOML routes
+reference credential environment variables rather than containing secrets.
+Configuration is validated before binding, and startup warns for each
+unrestricted or unauthenticated route.
 
-```console
-cargo run -p pretix-webhook-cli --bin pretix-webhook -- \
-  --allow-organizer acmecorp \
-  --allow-organizer another-organizer \
-  --allow-event democon \
-  --credential webhook-user:change-me
-```
-
-Every option has an environment equivalent:
-
-| Option | Environment variable | Default |
-| --- | --- | --- |
-| `--bind` | `PRETIX_WEBHOOK_BIND` | `127.0.0.1:3000` |
-| `--path` | `PRETIX_WEBHOOK_PATH` | `/webhook` |
-| `--allow-organizer` | `PRETIX_WEBHOOK_ALLOW_ORGANIZERS` | all organizers |
-| `--allow-event` | `PRETIX_WEBHOOK_ALLOW_EVENTS` | all events |
-| `--credential` | `PRETIX_WEBHOOK_CREDENTIALS` | authentication disabled |
-
-Use semicolons between multiple values in environment variables:
-
-```console
-PRETIX_WEBHOOK_ALLOW_ORGANIZERS='acmecorp;another-organizer' \
-PRETIX_WEBHOOK_ALLOW_EVENTS='democon;conference' \
-PRETIX_WEBHOOK_CREDENTIALS='old:secret;current:new-secret' \
-cargo run -p pretix-webhook-cli --bin pretix-webhook
-```
-
-Organizer and event filters are independent and exact. Every non-empty
-applicable filter is enforced, while an omitted filter leaves that dimension
-unrestricted. Organizer-level payloads have no event slug, so they consult only
-the organizer filter. If both filters are omitted, the CLI prints a warning and
-accepts webhooks for all organizers and events.
-
-Build the CLI with structured tracing instead of default logging:
-
-```console
-cargo run -p pretix-webhook-cli --bin pretix-webhook \
-  --no-default-features --features tracing -- --allow-organizer acmecorp
-```
+See the [CLI operator guide] for all options, prefix precedence, the reusable
+TOML format, credential handling, validation behavior, security guidance, and
+supported observability builds.
 
 ## References
 
@@ -133,6 +63,8 @@ cargo run -p pretix-webhook-cli --bin pretix-webhook \
 [pretix webhooks]: https://docs.pretix.eu/dev/api/webhooks.html
 [Pretix core webhook action types]: https://docs.pretix.eu/dev/api/resources/webhooks.html
 [Pretix core payload builders]: https://github.com/pretix/pretix/blob/master/src/pretix/api/webhooks.py
+[receiver library guide]: crates/pretix-webhook/README.md
+[CLI operator guide]: crates/pretix-webhook-cli/README.md
 
 ## License
 

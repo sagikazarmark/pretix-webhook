@@ -1,4 +1,4 @@
-//! Configuration for the `pretix-webhook` command.
+#![doc = include_str!("../README.md")]
 
 mod config;
 
