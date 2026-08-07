@@ -346,6 +346,201 @@ fn strict_toml_errors_identify_the_source_file() {
 }
 
 #[test]
+fn toml_semantic_errors_are_aggregated_deterministically_without_sensitive_values() {
+    let _environment = lock_environment();
+    let path = fixture("invalid-semantic-multi.toml");
+    let diagnostic = temp_env::with_vars(
+        [
+            (
+                "DUPLICATE_CREDENTIAL_REFERENCE",
+                Some("private-user:private-secret"),
+            ),
+            ("MISSING_CREDENTIAL_REFERENCE", None),
+        ],
+        || {
+            Config::try_parse_from(["pretix-webhook", "--config", path.as_str()])
+                .unwrap()
+                .into_effective()
+                .unwrap_err()
+                .to_string()
+        },
+    );
+
+    let expected_in_order = [
+        "webhooks entry 1: duplicate organizer slug",
+        "webhooks entry 1: duplicate event slug",
+        "webhooks entry 1: duplicate credential environment-variable name",
+        "webhooks entry 1 (\"/incoming/duplicate\"): invalid organizer slug: it must not be empty",
+        "webhooks entry 1 (\"/incoming/duplicate\"): invalid organizer slug: leading and trailing whitespace are not allowed",
+        "webhooks entry 1 (\"/incoming/duplicate\"): invalid event slug: leading and trailing whitespace are not allowed",
+        "webhooks entry 1 (\"/incoming/duplicate\"): credential environment variable \"MISSING_CREDENTIAL_REFERENCE\" is missing or not valid Unicode",
+        "webhooks entry 2: duplicate resolved webhook path \"/incoming/duplicate\" (first used by entry 1)",
+        "webhooks entry 3: invalid relative webhook path \"\"",
+        "webhooks entry 4: invalid relative webhook path \"/leading\"",
+        "webhooks entry 5: invalid relative webhook path \"trailing/\"",
+        "webhooks entry 6: invalid relative webhook path \"empty//segment\"",
+        "webhooks entry 7: invalid relative webhook path \"dot/./segment\"",
+        "webhooks entry 8: invalid relative webhook path \"dot-dot/../segment\"",
+        "webhooks entry 9: invalid relative webhook path \"dynamic/{route}\"",
+        "webhooks entry 10: invalid relative webhook path \"query?enabled=true\"",
+        "webhooks entry 11: invalid relative webhook path \"fragment#value\"",
+        "webhooks entry 12: invalid relative webhook path \"encoded%2Froute\"",
+        "webhooks entry 13: invalid relative webhook path \"white space\"",
+        "webhooks entry 14: invalid relative webhook path \"non-ascii-é\"",
+    ];
+    let mut previous = 0;
+    for expected in expected_in_order {
+        let position = diagnostic[previous..]
+            .find(expected)
+            .unwrap_or_else(|| panic!("missing {expected:?} in {diagnostic:?}"));
+        previous += position + expected.len();
+    }
+
+    for sensitive in [
+        "private-organizer",
+        "private-event",
+        "DUPLICATE_CREDENTIAL_REFERENCE",
+        "private-user",
+        "private-secret",
+    ] {
+        assert!(
+            !diagnostic.contains(sensitive),
+            "value leaked in {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn multi_mode_source_conflicts_empty_routes_and_invalid_prefix_are_aggregated() {
+    let _environment = lock_environment();
+    let path = fixture("empty-multi.toml");
+    let diagnostic = temp_env::with_vars(
+        [
+            ("PRETIX_WEBHOOK_PATH", Some("/private-path")),
+            ("PRETIX_WEBHOOK_ALLOW_ORGANIZERS", Some("private-organizer")),
+            ("PRETIX_WEBHOOK_ALLOW_EVENTS", Some("private-event")),
+            (
+                "PRETIX_WEBHOOK_CREDENTIALS",
+                Some("private-user:private-secret"),
+            ),
+        ],
+        || {
+            Config::try_parse_from([
+                "pretix-webhook",
+                "--config",
+                path.as_str(),
+                "--prefix",
+                "invalid-prefix",
+            ])
+            .unwrap()
+            .into_effective()
+            .unwrap_err()
+            .to_string()
+        },
+    );
+
+    let expected_in_order = [
+        "simple webhook path input cannot be combined with --config",
+        "simple organizer filter inputs cannot be combined with --config",
+        "simple event filter inputs cannot be combined with --config",
+        "simple credential inputs cannot be combined with --config",
+        "at least one [[webhooks]] entry is required",
+        "invalid webhook prefix \"invalid-prefix\"",
+    ];
+    let mut previous = 0;
+    for expected in expected_in_order {
+        let position = diagnostic[previous..]
+            .find(expected)
+            .unwrap_or_else(|| panic!("missing {expected:?} in {diagnostic:?}"));
+        previous += position + expected.len();
+    }
+
+    for sensitive in [
+        "private-path",
+        "private-organizer",
+        "private-event",
+        "private-user",
+        "private-secret",
+    ] {
+        assert!(
+            !diagnostic.contains(sensitive),
+            "value leaked in {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn every_invalid_multi_prefix_form_is_semantically_rejected() {
+    let _environment = lock_environment();
+    let path = fixture("minimal-multi.toml");
+    for prefix in [
+        "incoming",
+        "/incoming/",
+        "/incoming//route",
+        "/incoming/./route",
+        "/incoming/../route",
+        "/incoming/{route}",
+        "/incoming?enabled=true",
+        "/incoming#fragment",
+        "/incoming%2Froute",
+        "/incoming route",
+        "/incoming/é",
+    ] {
+        let config = Config::try_parse_from([
+            "pretix-webhook",
+            "--config",
+            path.as_str(),
+            "--prefix",
+            prefix,
+        ])
+        .unwrap();
+        let diagnostic = config.into_effective().unwrap_err().to_string();
+        assert!(
+            diagnostic.contains(prefix),
+            "error did not identify {prefix:?}: {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_prefix_does_not_hide_independent_route_errors() {
+    let _environment = lock_environment();
+    let path = fixture("invalid-semantic-multi.toml");
+    let diagnostic = temp_env::with_vars(
+        [
+            ("DUPLICATE_CREDENTIAL_REFERENCE", Some("valid:credential")),
+            ("MISSING_CREDENTIAL_REFERENCE", None),
+        ],
+        || {
+            Config::try_parse_from([
+                "pretix-webhook",
+                "--config",
+                path.as_str(),
+                "--prefix",
+                "invalid-prefix",
+            ])
+            .unwrap()
+            .into_effective()
+            .unwrap_err()
+            .to_string()
+        },
+    );
+
+    for expected in [
+        "invalid webhook prefix",
+        "duplicate organizer slug",
+        "duplicate webhook route (first used by entry 1; resolved path unavailable because the prefix is invalid)",
+        "invalid relative webhook path",
+        "MISSING_CREDENTIAL_REFERENCE",
+    ] {
+        assert!(
+            diagnostic.contains(expected),
+            "missing {expected:?} in {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
 fn bind_configuration_remains_available_in_multi_mode() {
     let _environment = lock_environment();
     let config = parse_multi(&fixture("minimal-multi.toml"), &["--bind", "0.0.0.0:8787"]);

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::{Debug, Display, Formatter},
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -9,7 +9,7 @@ use std::{
 use clap::Parser;
 use pretix_webhook::{
     BasicAuthCredential, WebhookConfig, resolve_webhook_path, validate_absolute_webhook_path,
-    validate_webhook_prefix,
+    validate_relative_webhook_path, validate_webhook_prefix,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -50,11 +50,7 @@ pub struct Config {
     file: Option<PathBuf>,
 
     /// Override the global prefix used with --config.
-    #[arg(
-        long,
-        env = "PRETIX_WEBHOOK_PREFIX",
-        value_parser = parse_prefix
-    )]
+    #[arg(long, env = "PRETIX_WEBHOOK_PREFIX")]
     prefix: Option<String>,
 
     /// Exact URL path at which the webhook is exposed.
@@ -155,112 +151,134 @@ impl Config {
     }
 
     fn into_multi_effective(self, config_path: &Path) -> Result<EffectiveConfig, ConfigError> {
-        if self.path.is_some()
-            || !self.allowed_organizers.is_empty()
-            || !self.allowed_events.is_empty()
-            || !self.credentials.is_empty()
-        {
-            return Err(ConfigError::MixedMode(
-                "--config cannot be combined with simple endpoint path, filter, or credential inputs"
-                    .to_owned(),
-            ));
-        }
+        let document = read_toml_config(config_path)?;
 
-        let source = std::fs::read_to_string(config_path).map_err(|source| ConfigError::Read {
-            path: config_path.to_owned(),
-            source,
-        })?;
-        let document: TomlConfig = toml::from_str(&source).map_err(|source| ConfigError::Toml {
-            path: config_path.to_owned(),
-            source,
-        })?;
+        let mut errors = self.multi_mode_conflict_errors();
         if document.webhooks.is_empty() {
-            return Err(invalid_toml_config(
-                config_path,
-                &"at least one [[webhooks]] entry is required",
-            ));
+            errors.push("at least one [[webhooks]] entry is required".to_owned());
         }
 
         let prefix = self
             .prefix
             .or(document.prefix)
             .unwrap_or_else(|| "/webhook".to_owned());
-        validate_webhook_prefix(&prefix)
-            .map_err(|error| invalid_toml_config(config_path, &error))?;
+        let prefix_is_valid = match validate_webhook_prefix(&prefix) {
+            Ok(()) => true,
+            Err(error) => {
+                errors.push(error.to_string());
+                false
+            }
+        };
 
-        let mut resolved_paths = HashSet::new();
-        let mut endpoints = Vec::with_capacity(document.webhooks.len());
+        let mut route_paths = HashMap::new();
+        let mut validated_webhooks = Vec::with_capacity(document.webhooks.len());
         for (index, webhook) in document.webhooks.into_iter().enumerate() {
             let route_number = index + 1;
-            let path = resolve_webhook_path(&prefix, &webhook.path).map_err(|error| {
-                invalid_toml_config(
-                    config_path,
-                    &format!("webhooks entry {route_number}: {error}"),
-                )
-            })?;
-            if !resolved_paths.insert(path.clone()) {
-                return Err(invalid_toml_config(
-                    config_path,
-                    &format!("webhooks entry {route_number}: duplicate webhook path {path:?}"),
+            let relative_path_is_valid = match validate_relative_webhook_path(&webhook.path) {
+                Ok(()) => true,
+                Err(error) => {
+                    errors.push(format!("webhooks entry {route_number}: {error}"));
+                    false
+                }
+            };
+            let path = (prefix_is_valid && relative_path_is_valid)
+                .then(|| resolve_webhook_path(&prefix, &webhook.path).expect("validated paths"));
+            if relative_path_is_valid {
+                if let Some(error) = duplicate_route_error(
+                    &mut route_paths,
+                    &webhook.path,
+                    path.as_deref(),
+                    route_number,
+                ) {
+                    errors.push(error);
+                }
+            }
+
+            if contains_duplicates(&webhook.allow_organizers) {
+                errors.push(format!(
+                    "webhooks entry {route_number}: duplicate organizer slug"
                 ));
             }
-            let unrestricted =
-                webhook.allow_organizers.is_empty() && webhook.allow_events.is_empty();
-            let unauthenticated = webhook.credential_env.is_empty();
+            if contains_duplicates(&webhook.allow_events) {
+                errors.push(format!(
+                    "webhooks entry {route_number}: duplicate event slug"
+                ));
+            }
+            if contains_duplicates(&webhook.credential_env) {
+                errors.push(format!(
+                    "webhooks entry {route_number}: duplicate credential environment-variable name"
+                ));
+            }
+
+            let route = route_context(route_number, path.as_deref());
+            for organizer in &webhook.allow_organizers {
+                if let Some(message) = invalid_filter_message("organizer", organizer) {
+                    errors.push(format!("{route}: {message}"));
+                }
+            }
+            for event in &webhook.allow_events {
+                if let Some(message) = invalid_filter_message("event", event) {
+                    errors.push(format!("{route}: {message}"));
+                }
+            }
+
             let mut credentials = Vec::with_capacity(webhook.credential_env.len());
-            for variable in webhook.credential_env {
-                let value = std::env::var(&variable).map_err(|_| {
-                    invalid_toml_config(
-                        config_path,
-                        &format!(
-                            "webhooks entry {route_number} ({path:?}): credential environment variable {variable:?} is missing or not valid Unicode"
-                        ),
-                    )
-                })?;
-                let credential = value.parse::<Credential>().map_err(|error| {
-                    invalid_toml_config(
-                        config_path,
-                        &format!(
-                            "webhooks entry {route_number} ({path:?}): credential environment variable {variable:?} is invalid: {error}"
-                        ),
-                    )
-                })?;
-                credentials.push(credential.0);
+            let mut visited_variables = HashSet::new();
+            for variable in &webhook.credential_env {
+                if !visited_variables.insert(variable) {
+                    continue;
+                }
+                match std::env::var(variable) {
+                    Ok(value) => match value.parse::<Credential>() {
+                        Ok(credential) => credentials.push(credential.0),
+                        Err(error) => errors.push(format!(
+                            "{route}: credential environment variable {variable:?} is invalid: {error}"
+                        )),
+                    },
+                    Err(_) => errors.push(format!(
+                        "{route}: credential environment variable {variable:?} is missing or not valid Unicode"
+                    )),
+                }
             }
 
-            let mut webhook_config = WebhookConfig::new();
-            for organizer in webhook.allow_organizers {
-                webhook_config = webhook_config.allow_organizer(organizer).map_err(|error| {
-                    invalid_toml_config(
-                        config_path,
-                        &format!("webhooks entry {route_number} ({path:?}): {error}"),
-                    )
-                })?;
-            }
-            for event in webhook.allow_events {
-                webhook_config = webhook_config.allow_event(event).map_err(|error| {
-                    invalid_toml_config(
-                        config_path,
-                        &format!("webhooks entry {route_number} ({path:?}): {error}"),
-                    )
-                })?;
-            }
-            if !unauthenticated {
-                webhook_config = webhook_config.require_basic_auth(credentials);
-            }
-
-            endpoints.push(EffectiveEndpoint {
+            validated_webhooks.push(ValidatedWebhook {
+                webhook,
                 path,
-                webhook_config,
-                unrestricted,
-                unauthenticated,
+                credentials,
             });
         }
+
+        if !errors.is_empty() {
+            return Err(invalid_toml_config(
+                config_path,
+                &format_validation_errors(&errors),
+            ));
+        }
+
+        let endpoints = build_effective_endpoints(validated_webhooks);
 
         Ok(EffectiveConfig {
             bind: self.bind,
             endpoints,
         })
+    }
+
+    fn multi_mode_conflict_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.path.is_some() {
+            errors.push("simple webhook path input cannot be combined with --config".to_owned());
+        }
+        if !self.allowed_organizers.is_empty() {
+            errors
+                .push("simple organizer filter inputs cannot be combined with --config".to_owned());
+        }
+        if !self.allowed_events.is_empty() {
+            errors.push("simple event filter inputs cannot be combined with --config".to_owned());
+        }
+        if !self.credentials.is_empty() {
+            errors.push("simple credential inputs cannot be combined with --config".to_owned());
+        }
+        errors
     }
 }
 
@@ -281,6 +299,17 @@ struct TomlWebhook {
     allow_events: Vec<String>,
     #[serde(default)]
     credential_env: Vec<String>,
+}
+
+fn read_toml_config(path: &Path) -> Result<TomlConfig, ConfigError> {
+    let source = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    toml::from_str(&source).map_err(|source| ConfigError::Toml {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// An invalid command-line, environment, or TOML configuration.
@@ -311,6 +340,96 @@ fn invalid_toml_config(path: &Path, message: &dyn Display) -> ConfigError {
         path: path.to_owned(),
         message: message.to_string(),
     }
+}
+
+fn contains_duplicates(values: &[String]) -> bool {
+    let mut unique = HashSet::new();
+    values.iter().any(|value| !unique.insert(value))
+}
+
+fn duplicate_route_error(
+    routes: &mut HashMap<String, usize>,
+    relative_path: &str,
+    resolved_path: Option<&str>,
+    route_number: usize,
+) -> Option<String> {
+    let Some(first_route) = routes.get(relative_path) else {
+        routes.insert(relative_path.to_owned(), route_number);
+        return None;
+    };
+    Some(resolved_path.map_or_else(
+        || {
+            format!(
+                "webhooks entry {route_number}: duplicate webhook route (first used by entry {first_route}; resolved path unavailable because the prefix is invalid)"
+            )
+        },
+        |path| {
+            format!(
+                "webhooks entry {route_number}: duplicate resolved webhook path {path:?} (first used by entry {first_route})"
+            )
+        },
+    ))
+}
+
+fn invalid_filter_message(kind: &str, value: &str) -> Option<String> {
+    if value.is_empty() {
+        return Some(format!("invalid {kind} slug: it must not be empty"));
+    }
+    (value.trim() != value)
+        .then(|| format!("invalid {kind} slug: leading and trailing whitespace are not allowed"))
+}
+
+fn route_context(route_number: usize, path: Option<&str>) -> String {
+    path.map_or_else(
+        || format!("webhooks entry {route_number}"),
+        |path| format!("webhooks entry {route_number} ({path:?})"),
+    )
+}
+
+fn format_validation_errors(errors: &[String]) -> String {
+    format!(
+        "configuration has semantic errors:\n- {}",
+        errors.join("\n- ")
+    )
+}
+
+struct ValidatedWebhook {
+    webhook: TomlWebhook,
+    path: Option<String>,
+    credentials: Vec<BasicAuthCredential>,
+}
+
+fn build_effective_endpoints(webhooks: Vec<ValidatedWebhook>) -> Vec<EffectiveEndpoint> {
+    webhooks
+        .into_iter()
+        .map(|validated| {
+            let webhook = validated.webhook;
+            let unrestricted =
+                webhook.allow_organizers.is_empty() && webhook.allow_events.is_empty();
+            let unauthenticated = webhook.credential_env.is_empty();
+            let mut webhook_config = WebhookConfig::new();
+            for organizer in webhook.allow_organizers {
+                webhook_config = webhook_config
+                    .allow_organizer(organizer)
+                    .expect("organizer filters were validated");
+            }
+            for event in webhook.allow_events {
+                webhook_config = webhook_config
+                    .allow_event(event)
+                    .expect("event filters were validated");
+            }
+            if !unauthenticated {
+                webhook_config = webhook_config.require_basic_auth(validated.credentials);
+            }
+
+            EffectiveEndpoint {
+                path: validated.path.expect("all routes were validated"),
+                webhook_config,
+                unrestricted,
+                unauthenticated,
+            }
+        })
+        .collect()
 }
 
 /// Fully resolved and validated process configuration.
@@ -370,10 +489,5 @@ impl EffectiveEndpoint {
 
 fn parse_path(value: &str) -> Result<String, String> {
     validate_absolute_webhook_path(value).map_err(|error| error.to_string())?;
-    Ok(value.to_owned())
-}
-
-fn parse_prefix(value: &str) -> Result<String, String> {
-    validate_webhook_prefix(value).map_err(|error| error.to_string())?;
     Ok(value.to_owned())
 }

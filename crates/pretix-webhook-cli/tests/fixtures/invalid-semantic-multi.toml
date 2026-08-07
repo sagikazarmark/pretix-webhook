@@ -1,0 +1,46 @@
+prefix = "/incoming"
+
+[[webhooks]]
+path = "duplicate"
+allow_organizers = ["", " private-organizer", " private-organizer"]
+allow_events = ["private-event", "private-event", "private-event "]
+credential_env = ["DUPLICATE_CREDENTIAL_REFERENCE", "DUPLICATE_CREDENTIAL_REFERENCE", "MISSING_CREDENTIAL_REFERENCE"]
+
+[[webhooks]]
+path = "duplicate"
+
+[[webhooks]]
+path = ""
+
+[[webhooks]]
+path = "/leading"
+
+[[webhooks]]
+path = "trailing/"
+
+[[webhooks]]
+path = "empty//segment"
+
+[[webhooks]]
+path = "dot/./segment"
+
+[[webhooks]]
+path = "dot-dot/../segment"
+
+[[webhooks]]
+path = "dynamic/{route}"
+
+[[webhooks]]
+path = "query?enabled=true"
+
+[[webhooks]]
+path = "fragment#value"
+
+[[webhooks]]
+path = "encoded%2Froute"
+
+[[webhooks]]
+path = "white space"
+
+[[webhooks]]
+path = "non-ascii-é"

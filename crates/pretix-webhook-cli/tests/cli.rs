@@ -78,6 +78,49 @@ fn credential_startup_diagnostics_identify_the_reference_without_leaking_its_val
     assert!(!stderr.contains("Address already in use"));
 }
 
+#[test]
+fn aggregated_configuration_validation_precedes_listener_binding() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bind = listener.local_addr().unwrap().to_string();
+    let config_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/invalid-semantic-multi.toml"
+    );
+    let output = command(&bind)
+        .args(["--config", config_path])
+        .env(
+            "DUPLICATE_CREDENTIAL_REFERENCE",
+            "private-user:private-secret",
+        )
+        .env_remove("MISSING_CREDENTIAL_REFERENCE")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert!(!output.status.success());
+    for expected in [
+        "duplicate organizer slug",
+        "duplicate resolved webhook path",
+        "invalid relative webhook path",
+        "MISSING_CREDENTIAL_REFERENCE",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr:?}"
+        );
+    }
+    for sensitive in [
+        "private-organizer",
+        "private-event",
+        "DUPLICATE_CREDENTIAL_REFERENCE",
+        "private-user",
+        "private-secret",
+    ] {
+        assert!(!stderr.contains(sensitive), "value leaked in {stderr:?}");
+    }
+    assert!(!stderr.contains("Address already in use"));
+}
+
 fn command(bind: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pretix-webhook"));
     command
