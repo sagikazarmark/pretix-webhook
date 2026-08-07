@@ -2,4 +2,4 @@
 
 mod config;
 
-pub use config::{Config, EffectiveConfig, EffectiveEndpoint};
+pub use config::{Config, ConfigError, EffectiveConfig, EffectiveEndpoint};

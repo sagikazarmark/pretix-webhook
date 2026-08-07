@@ -1,0 +1,12 @@
+prefix = "/incoming"
+
+[[webhooks]]
+path = "sales/orders"
+allow_organizers = ["acmecorp"]
+allow_events = ["democon"]
+credential_env = []
+
+[[webhooks]]
+path = "operations/checkins"
+allow_organizers = ["other"]
+allow_events = ["conference"]

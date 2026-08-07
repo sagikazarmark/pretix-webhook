@@ -8,15 +8,25 @@ use pretix_webhook_cli::Config;
 async fn main() -> Result<(), Box<dyn Error>> {
     init_observability();
     let config = Config::parse().into_effective()?;
-    if config.endpoint().is_unrestricted() {
-        warn_unrestricted();
+    for endpoint in config.endpoints() {
+        if endpoint.is_unrestricted() {
+            warn_unrestricted(endpoint.path());
+        }
     }
-    let (bind, endpoint) = config.into_parts();
-    let (path, webhook_config) = endpoint.into_parts();
-    let app = webhook_router_at(&path, selected_handler(&path)?, webhook_config)?;
+    let (bind, endpoints) = config.into_parts();
+    let route_count = endpoints.len();
+    let mut app = axum::Router::new();
+    for endpoint in endpoints {
+        let (path, webhook_config) = endpoint.into_parts();
+        app = app.merge(webhook_router_at(
+            &path,
+            selected_handler(&path)?,
+            webhook_config,
+        )?);
+    }
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
-    announce_listener(bind, &path);
+    announce_listener(bind, route_count);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -62,22 +72,30 @@ fn init_observability() {
 fn init_observability() {}
 
 #[cfg(feature = "tracing")]
-fn announce_listener(bind: std::net::SocketAddr, path: &str) {
-    tracing::info!(%bind, %path, "pretix webhook receiver listening");
+fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
+    tracing::info!(%bind, route_count, "pretix webhook receiver listening");
 }
 
-fn warn_unrestricted() {
-    eprintln!("warning: no filters configured; accepting all events from all organizers");
+fn warn_unrestricted(path: &str) {
+    eprintln!(
+        "warning: no filters configured for {path}; accepting all events from all organizers"
+    );
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-fn announce_listener(bind: std::net::SocketAddr, path: &str) {
-    log::info!("pretix webhook receiver listening on http://{bind}{path}");
+fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
+    log::info!(
+        "pretix webhook receiver listening on http://{bind} with {} route(s)",
+        route_count
+    );
 }
 
 #[cfg(not(any(feature = "tracing", feature = "log")))]
-fn announce_listener(bind: std::net::SocketAddr, path: &str) {
-    eprintln!("pretix webhook receiver listening on http://{bind}{path}");
+fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
+    eprintln!(
+        "pretix webhook receiver listening on http://{bind} with {} route(s)",
+        route_count
+    );
 }
 
 async fn shutdown_signal() {

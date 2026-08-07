@@ -1,0 +1,2 @@
+[[webhooks]]
+path = ["not", "a", "string"]

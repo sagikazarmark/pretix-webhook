@@ -7,10 +7,9 @@ fn warns_on_stderr_only_when_both_filters_are_omitted() {
 
     let unrestricted = command(&bind).output().unwrap();
     let unrestricted_stderr = String::from_utf8(unrestricted.stderr).unwrap();
-    assert!(
-        unrestricted_stderr
-            .contains("warning: no filters configured; accepting all events from all organizers")
-    );
+    assert!(unrestricted_stderr.contains(
+        "warning: no filters configured for /webhook; accepting all events from all organizers"
+    ));
 
     let restricted = command(&bind)
         .args(["--allow-organizer", "acmecorp"])
@@ -29,6 +28,16 @@ fn rejects_invalid_endpoint_configuration_before_binding() {
         ),
         (["--path", "hooks"], "it must start with '/'"),
         (["--credential", "malformed"], "expected USERNAME:PASSWORD"),
+        (
+            [
+                "--config",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/empty-multi.toml"
+                ),
+            ],
+            "at least one [[webhooks]] entry is required",
+        ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let bind = listener.local_addr().unwrap().to_string();
@@ -51,6 +60,7 @@ fn command(bind: &str) -> Command {
         .env_remove("PRETIX_WEBHOOK_ALLOW_ORGANIZERS")
         .env_remove("PRETIX_WEBHOOK_ALLOW_EVENTS")
         .env_remove("PRETIX_WEBHOOK_CREDENTIALS")
-        .env_remove("PRETIX_WEBHOOK_PATH");
+        .env_remove("PRETIX_WEBHOOK_PATH")
+        .env_remove("PRETIX_WEBHOOK_PREFIX");
     command
 }

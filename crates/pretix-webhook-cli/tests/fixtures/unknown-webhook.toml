@@ -1,0 +1,3 @@
+[[webhooks]]
+path = "route"
+allow_organizer = ["misspelled"]
