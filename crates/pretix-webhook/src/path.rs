@@ -12,6 +12,10 @@ impl WebhookPathError {
             message: message.into(),
         }
     }
+
+    pub(crate) fn duplicate(path: &str) -> Self {
+        Self::new(format!("duplicate webhook path {path:?}"))
+    }
 }
 
 impl Display for WebhookPathError {

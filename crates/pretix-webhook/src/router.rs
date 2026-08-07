@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{
     Router,
     body::Bytes,
@@ -11,13 +13,72 @@ use pretix_webhook_events::WebhookEvent;
 use crate::{
     config::WebhookConfig,
     handler::WebhookHandler,
-    path::{WebhookPathError, validate_absolute_webhook_path},
+    path::{
+        WebhookPathError, resolve_webhook_path, validate_absolute_webhook_path,
+        validate_webhook_prefix,
+    },
 };
 
 #[derive(Clone)]
 struct AppState<H> {
     handler: H,
     config: WebhookConfig,
+}
+
+/// Builds multiple exact webhook endpoints beneath one global URL prefix.
+pub struct MultiWebhookRouter {
+    prefix: String,
+    resolved_paths: HashSet<String>,
+    router: Router,
+}
+
+impl MultiWebhookRouter {
+    /// Creates an empty multi-webhook router with a validated global prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookPathError`] when `prefix` is invalid.
+    pub fn new(prefix: impl Into<String>) -> Result<Self, WebhookPathError> {
+        let prefix = prefix.into();
+        validate_webhook_prefix(&prefix)?;
+        Ok(Self {
+            prefix,
+            resolved_paths: HashSet::new(),
+            router: Router::new(),
+        })
+    }
+
+    /// Registers one independently configured webhook at a relative path.
+    ///
+    /// Each call may use a different concrete handler and handler error type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookPathError`] when `relative_path` is invalid or resolves
+    /// to an already registered path.
+    pub fn register<H>(
+        mut self,
+        relative_path: &str,
+        handler: H,
+        config: WebhookConfig,
+    ) -> Result<Self, WebhookPathError>
+    where
+        H: WebhookHandler,
+    {
+        let path = resolve_webhook_path(&self.prefix, relative_path)?;
+        if !self.resolved_paths.insert(path.clone()) {
+            return Err(WebhookPathError::duplicate(&path));
+        }
+        self.router = self
+            .router
+            .merge(build_webhook_router(&path, handler, config));
+        Ok(self)
+    }
+
+    /// Finishes registration and returns an ordinary Axum router.
+    pub fn finish(self) -> Router {
+        self.router
+    }
 }
 
 /// Builds a router with a `POST /` webhook endpoint.
