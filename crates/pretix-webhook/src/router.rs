@@ -27,11 +27,81 @@ struct AppState<H> {
     route: Option<String>,
 }
 
+/// Builds multiple exact webhook endpoints at absolute paths.
+///
+/// Registering an already registered path returns an error, where merging two
+/// Axum routers that share a route would panic. Use [`MultiWebhookRouter`]
+/// instead when every path is relative to one shared prefix.
+pub struct WebhookRouterBuilder {
+    resolved_paths: HashSet<String>,
+    router: Router,
+}
+
+impl WebhookRouterBuilder {
+    /// Creates an empty builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            resolved_paths: HashSet::new(),
+            router: Router::new(),
+        }
+    }
+
+    /// Registers one independently configured webhook at an exact absolute path.
+    ///
+    /// Each call may use a different concrete handler and handler error type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookPathError`] when `path` is invalid or already
+    /// registered.
+    pub fn register_at<H>(
+        self,
+        path: &str,
+        handler: H,
+        config: WebhookConfig,
+    ) -> Result<Self, WebhookPathError>
+    where
+        H: WebhookHandler,
+    {
+        validate_absolute_webhook_path(path)?;
+        self.install(path, handler, config)
+    }
+
+    /// Finishes registration and returns an ordinary Axum router.
+    pub fn finish(self) -> Router {
+        self.router
+    }
+
+    fn install<H>(
+        mut self,
+        path: &str,
+        handler: H,
+        config: WebhookConfig,
+    ) -> Result<Self, WebhookPathError>
+    where
+        H: WebhookHandler,
+    {
+        if !self.resolved_paths.insert(path.to_owned()) {
+            return Err(WebhookPathError::duplicate(path));
+        }
+        self.router = self
+            .router
+            .merge(build_webhook_router(path, Some(path), handler, config));
+        Ok(self)
+    }
+}
+
+impl Default for WebhookRouterBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Builds multiple exact webhook endpoints beneath one global URL prefix.
 pub struct MultiWebhookRouter {
     prefix: String,
-    resolved_paths: HashSet<String>,
-    router: Router,
+    builder: WebhookRouterBuilder,
 }
 
 impl MultiWebhookRouter {
@@ -45,8 +115,7 @@ impl MultiWebhookRouter {
         validate_webhook_prefix(&prefix)?;
         Ok(Self {
             prefix,
-            resolved_paths: HashSet::new(),
-            router: Router::new(),
+            builder: WebhookRouterBuilder::new(),
         })
     }
 
@@ -59,7 +128,7 @@ impl MultiWebhookRouter {
     /// Returns [`WebhookPathError`] when `relative_path` is invalid or resolves
     /// to an already registered path.
     pub fn register<H>(
-        mut self,
+        self,
         relative_path: &str,
         handler: H,
         config: WebhookConfig,
@@ -68,18 +137,16 @@ impl MultiWebhookRouter {
         H: WebhookHandler,
     {
         let path = resolve_webhook_path(&self.prefix, relative_path)?;
-        if !self.resolved_paths.insert(path.clone()) {
-            return Err(WebhookPathError::duplicate(&path));
-        }
-        self.router = self
-            .router
-            .merge(build_webhook_router(&path, Some(&path), handler, config));
-        Ok(self)
+        let Self { prefix, builder } = self;
+        Ok(Self {
+            prefix,
+            builder: builder.install(&path, handler, config)?,
+        })
     }
 
     /// Finishes registration and returns an ordinary Axum router.
     pub fn finish(self) -> Router {
-        self.router
+        self.builder.finish()
     }
 }
 

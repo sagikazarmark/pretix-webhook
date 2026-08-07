@@ -245,6 +245,33 @@ fn multi_prefix_precedence_is_cli_environment_toml_then_default() {
 }
 
 #[test]
+fn an_overridden_toml_prefix_is_still_validated() {
+    let _environment = lock_environment();
+    let path = fixture("invalid-prefix-multi.toml");
+
+    for override_prefix in [
+        Config::try_parse_from([
+            "pretix-webhook",
+            "--config",
+            path.as_str(),
+            "--prefix",
+            "/command-line",
+        ])
+        .unwrap(),
+        temp_env::with_var("PRETIX_WEBHOOK_PREFIX", Some("/environment"), || {
+            Config::try_parse_from(["pretix-webhook", "--config", path.as_str()]).unwrap()
+        }),
+    ] {
+        let diagnostic = override_prefix.into_effective().unwrap_err().to_string();
+        assert!(
+            diagnostic.contains("overridden TOML prefix is invalid"),
+            "{diagnostic:?}"
+        );
+        assert!(diagnostic.contains("not-absolute/"), "{diagnostic:?}");
+    }
+}
+
+#[test]
 fn multi_mode_is_selected_only_by_an_explicit_flag() {
     let _environment = lock_environment();
     let config = temp_env::with_vars(
@@ -704,6 +731,138 @@ fn combined_allowlist_option_and_environment_variable_are_removed() {
     assert!(config.endpoints()[0].is_unrestricted());
 }
 
+#[tokio::test]
+async fn only_environment_lists_are_semicolon_separated() {
+    let environment = lock_environment();
+    let cleared = [
+        ("PRETIX_WEBHOOK_ALLOW_ORGANIZERS", None::<&str>),
+        ("PRETIX_WEBHOOK_ALLOW_EVENTS", None),
+        ("PRETIX_WEBHOOK_CREDENTIALS", None),
+    ];
+
+    // A flag value is one exact slug, semicolons included.
+    let from_flag = temp_env::with_vars(cleared, || {
+        Config::try_parse_from(["pretix-webhook", "--allow-organizer", "first;second"])
+            .unwrap()
+            .into_effective()
+            .unwrap()
+    });
+    // The same value in the environment is a two-slug list.
+    let from_environment = temp_env::with_var(
+        "PRETIX_WEBHOOK_ALLOW_ORGANIZERS",
+        Some("first;second"),
+        || {
+            Config::try_parse_from(["pretix-webhook"])
+                .unwrap()
+                .into_effective()
+                .unwrap()
+        },
+    );
+    // Flags replace the environment list rather than extending it.
+    let flag_over_environment =
+        temp_env::with_var("PRETIX_WEBHOOK_ALLOW_ORGANIZERS", Some("from-env"), || {
+            Config::try_parse_from(["pretix-webhook", "--allow-organizer", "from-flag"])
+                .unwrap()
+                .into_effective()
+                .unwrap()
+        });
+    drop(environment);
+
+    assert_organizer_statuses(
+        from_flag,
+        &[
+            ("first;second", StatusCode::NO_CONTENT),
+            ("first", StatusCode::NOT_FOUND),
+            ("second", StatusCode::NOT_FOUND),
+        ],
+    )
+    .await;
+    assert_organizer_statuses(
+        from_environment,
+        &[
+            ("first", StatusCode::NO_CONTENT),
+            ("second", StatusCode::NO_CONTENT),
+            ("first;second", StatusCode::NOT_FOUND),
+        ],
+    )
+    .await;
+    assert_organizer_statuses(
+        flag_over_environment,
+        &[
+            ("from-flag", StatusCode::NO_CONTENT),
+            ("from-env", StatusCode::NOT_FOUND),
+        ],
+    )
+    .await;
+}
+
+#[test]
+fn duplicate_simple_filter_values_are_rejected() {
+    let _environment = lock_environment();
+    for arguments in [
+        vec![
+            "--allow-organizer",
+            "acmecorp",
+            "--allow-organizer",
+            "acmecorp",
+        ],
+        vec!["--allow-event", "democon", "--allow-event", "democon"],
+    ] {
+        let mut command = vec!["pretix-webhook"];
+        command.extend(arguments);
+        let error = Config::try_parse_from(command)
+            .unwrap()
+            .into_effective()
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate"), "{error}");
+    }
+
+    let from_environment = temp_env::with_var(
+        "PRETIX_WEBHOOK_ALLOW_ORGANIZERS",
+        Some("acmecorp;acmecorp"),
+        || {
+            Config::try_parse_from(["pretix-webhook"])
+                .unwrap()
+                .into_effective()
+                .unwrap_err()
+        },
+    );
+    assert!(
+        from_environment.to_string().contains("duplicate organizer"),
+        "{from_environment}"
+    );
+}
+
+#[test]
+fn effective_configuration_debug_output_does_not_disclose_policy() {
+    let _environment = lock_environment();
+    let config = temp_env::with_var("PRETIX_WEBHOOK_CREDENTIALS", None::<&str>, || {
+        Config::try_parse_from([
+            "pretix-webhook",
+            "--allow-organizer",
+            "private-organizer",
+            "--allow-event",
+            "private-event",
+            "--credential",
+            "private-user:private-secret",
+        ])
+        .unwrap()
+        .into_effective()
+        .unwrap()
+    });
+
+    let debug = format!("{config:?}");
+
+    for value in [
+        "private-organizer",
+        "private-event",
+        "private-user",
+        "private-secret",
+    ] {
+        assert!(!debug.contains(value), "value leaked in {debug:?}");
+    }
+}
+
 #[test]
 fn empty_and_whitespace_padded_filter_values_are_rejected() {
     let _environment = lock_environment();
@@ -756,6 +915,26 @@ fn command_line_paths_use_the_library_static_path_grammar() {
         assert!(
             error.to_string().contains(path),
             "error did not identify {path:?}: {error}"
+        );
+    }
+}
+
+async fn assert_organizer_statuses(
+    config: pretix_webhook_cli::EffectiveConfig,
+    expectations: &[(&str, StatusCode)],
+) {
+    let (_, mut endpoints) = config.into_parts();
+    let (_, webhook_config) = endpoints.pop().unwrap().into_parts();
+    let app = webhook_router(NoopHandler, webhook_config);
+
+    for (organizer, expected) in expectations {
+        let request = Request::post("/")
+            .body(Body::from(event_payload(organizer, "any-event")))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            *expected,
+            "unexpected status for organizer {organizer:?}"
         );
     }
 }

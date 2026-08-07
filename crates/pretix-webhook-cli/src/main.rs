@@ -1,15 +1,30 @@
-use std::error::Error;
+use std::{error::Error, process::ExitCode};
 
 use clap::Parser;
-use pretix_webhook::webhook_router_at;
+use pretix_webhook::WebhookRouterBuilder;
 use pretix_webhook_cli::Config;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> ExitCode {
     init_observability();
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // Report through `Display` so multi-line startup validation reports
+            // stay readable; the runtime's default `Debug` rendering escapes them
+            // onto one line.
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     let config = Config::parse().into_effective()?;
     let (bind, endpoints) = config.into_parts();
-    let mut app = axum::Router::new();
+    // Registering through the builder keeps a route collision an error; merging
+    // Axum routers directly would panic instead.
+    let mut builder = WebhookRouterBuilder::new();
     let mut diagnostics = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
         diagnostics.push(StartupRoute {
@@ -18,12 +33,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             unauthenticated: endpoint.is_unauthenticated(),
         });
         let (path, webhook_config) = endpoint.into_parts();
-        app = app.merge(webhook_router_at(
-            &path,
-            selected_handler(&path)?,
-            webhook_config,
-        )?);
+        builder = builder.register_at(&path, selected_handler(&path)?, webhook_config)?;
     }
+    let app = builder.finish();
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     report_startup(listener.local_addr()?, &diagnostics);

@@ -38,6 +38,16 @@ Organizer and event filters are independent and exact. Every non-empty
 applicable filter is enforced. Organizer-level payloads consult only the
 organizer filter. An omitted filter leaves that dimension unrestricted.
 
+Filter values must be exact, so an empty value is rejected rather than ignored.
+To leave a dimension unrestricted, leave its variable unset; setting it to an
+empty string is a configuration error, not an empty list. Repeating the same
+slug is also rejected, so copy/paste mistakes stay visible.
+
+Semicolons separate values only in the environment variables. A flag value is
+always one exact slug or credential, so a flag is repeated rather than
+delimited. When a flag is supplied, its environment variable is ignored rather
+than merged.
+
 ## TOML multi-webhook mode
 
 Multi-webhook mode is selected only by the explicit, flag-only `--config`
@@ -69,7 +79,9 @@ pretix-webhook --config webhooks.toml
 
 `--prefix` or `PRETIX_WEBHOOK_PREFIX` can override the file's prefix. Prefix
 precedence is `--prefix`, then `PRETIX_WEBHOOK_PREFIX`, then TOML `prefix`, then
-the `/webhook` default. `--bind` and `PRETIX_WEBHOOK_BIND` work in both modes.
+the `/webhook` default. An overridden TOML `prefix` is still validated, so a
+reusable file cannot rot unnoticed behind a deployment-specific override.
+`--bind` and `PRETIX_WEBHOOK_BIND` work in both modes.
 
 Simple endpoint settings (`--path`, filters, and literal credential inputs,
 including their environment equivalents) cannot be combined with `--config`.
