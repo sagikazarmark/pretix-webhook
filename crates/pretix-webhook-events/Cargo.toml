@@ -1,0 +1,14 @@
+[package]
+name = "pretix-webhook-events"
+description = "Typed event payloads sent by pretix webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

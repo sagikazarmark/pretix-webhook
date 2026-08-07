@@ -1,0 +1,35 @@
+[package]
+name = "pretix-webhook"
+description = "Axum support for receiving pretix webhooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+pretix-webhook-events = { version = "0.1.0", path = "../pretix-webhook-events" }
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+
+[features]
+default = []
+log = ["dep:log"]
+tracing = ["dep:tracing"]
+
+[dependencies.log]
+workspace = true
+optional = true
+
+[dependencies.tracing]
+workspace = true
+optional = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true

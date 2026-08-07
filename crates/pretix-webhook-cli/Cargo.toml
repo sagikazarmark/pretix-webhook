@@ -1,0 +1,46 @@
+[package]
+name = "pretix-webhook-cli"
+description = "Command-line pretix webhook receiver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+clap.workspace = true
+pretix-webhook = { version = "0.1.0", path = "../pretix-webhook", default-features = false }
+tokio.workspace = true
+
+[features]
+default = ["log"]
+log = ["dep:env_logger", "dep:log", "pretix-webhook/log"]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "pretix-webhook/tracing"]
+
+[dependencies.env_logger]
+workspace = true
+optional = true
+
+[dependencies.log]
+workspace = true
+optional = true
+
+[dependencies.tracing]
+workspace = true
+optional = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+optional = true
+
+[dev-dependencies]
+temp-env.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pretix-webhook"
+path = "src/main.rs"
+doc = false
