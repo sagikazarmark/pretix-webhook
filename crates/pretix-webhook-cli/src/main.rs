@@ -8,15 +8,15 @@ use pretix_webhook_cli::Config;
 async fn main() -> Result<(), Box<dyn Error>> {
     init_observability();
     let config = Config::parse().into_effective()?;
-    for endpoint in config.endpoints() {
-        if endpoint.is_unrestricted() {
-            warn_unrestricted(endpoint.path());
-        }
-    }
     let (bind, endpoints) = config.into_parts();
-    let route_count = endpoints.len();
     let mut app = axum::Router::new();
+    let mut diagnostics = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
+        diagnostics.push(StartupRoute {
+            path: endpoint.path().to_owned(),
+            unrestricted: endpoint.is_unrestricted(),
+            unauthenticated: endpoint.is_unauthenticated(),
+        });
         let (path, webhook_config) = endpoint.into_parts();
         app = app.merge(webhook_router_at(
             &path,
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
-    announce_listener(bind, route_count);
+    report_startup(listener.local_addr()?, &diagnostics);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -60,7 +60,10 @@ fn init_observability() {
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("pretix_webhook=info,pretix_webhook_cli=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]
@@ -73,20 +76,51 @@ fn init_observability() {}
 
 #[cfg(feature = "tracing")]
 fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
-    tracing::info!(%bind, route_count, "pretix webhook receiver listening");
+    tracing::info!(target: "pretix_webhook_cli", %bind, route_count, "pretix webhook receiver listening on http://{bind} with {route_count} route(s)");
 }
 
-fn warn_unrestricted(path: &str) {
-    eprintln!(
-        "warning: no filters configured for {path}; accepting all events from all organizers"
-    );
+#[cfg(feature = "tracing")]
+fn announce_route(route: &str) {
+    tracing::info!(target: "pretix_webhook_cli", %route, "pretix webhook route configured at {route}");
+}
+
+#[cfg(feature = "tracing")]
+fn warn_unrestricted(route: &str) {
+    tracing::warn!(target: "pretix_webhook_cli", %route, "warning: no filters configured for {route}; accepting all events from all organizers");
+}
+
+#[cfg(feature = "tracing")]
+fn warn_unauthenticated(route: &str) {
+    tracing::warn!(target: "pretix_webhook_cli", %route, "warning: no HTTP Basic credentials configured for {route}; accepting unauthenticated requests");
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]
 fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
     log::info!(
+        target: "pretix_webhook_cli",
         "pretix webhook receiver listening on http://{bind} with {} route(s)",
         route_count
+    );
+}
+
+#[cfg(all(not(feature = "tracing"), feature = "log"))]
+fn announce_route(route: &str) {
+    log::info!(target: "pretix_webhook_cli", "pretix webhook route configured at {route}");
+}
+
+#[cfg(all(not(feature = "tracing"), feature = "log"))]
+fn warn_unrestricted(route: &str) {
+    log::warn!(
+        target: "pretix_webhook_cli",
+        "warning: no filters configured for {route}; accepting all events from all organizers"
+    );
+}
+
+#[cfg(all(not(feature = "tracing"), feature = "log"))]
+fn warn_unauthenticated(route: &str) {
+    log::warn!(
+        target: "pretix_webhook_cli",
+        "warning: no HTTP Basic credentials configured for {route}; accepting unauthenticated requests"
     );
 }
 
@@ -96,6 +130,46 @@ fn announce_listener(bind: std::net::SocketAddr, route_count: usize) {
         "pretix webhook receiver listening on http://{bind} with {} route(s)",
         route_count
     );
+}
+
+#[cfg(not(any(feature = "tracing", feature = "log")))]
+fn announce_route(route: &str) {
+    eprintln!("pretix webhook route configured at {route}");
+}
+
+#[cfg(not(any(feature = "tracing", feature = "log")))]
+fn warn_unrestricted(route: &str) {
+    eprintln!(
+        "warning: no filters configured for {route}; accepting all events from all organizers"
+    );
+}
+
+#[cfg(not(any(feature = "tracing", feature = "log")))]
+fn warn_unauthenticated(route: &str) {
+    eprintln!(
+        "warning: no HTTP Basic credentials configured for {route}; accepting unauthenticated requests"
+    );
+}
+
+struct StartupRoute {
+    path: String,
+    unrestricted: bool,
+    unauthenticated: bool,
+}
+
+fn report_startup(bind: std::net::SocketAddr, endpoints: &[StartupRoute]) {
+    announce_listener(bind, endpoints.len());
+    for endpoint in endpoints {
+        announce_route(&endpoint.path);
+    }
+    for endpoint in endpoints {
+        if endpoint.unrestricted {
+            warn_unrestricted(&endpoint.path);
+        }
+        if endpoint.unauthenticated {
+            warn_unauthenticated(&endpoint.path);
+        }
+    }
 }
 
 async fn shutdown_signal() {

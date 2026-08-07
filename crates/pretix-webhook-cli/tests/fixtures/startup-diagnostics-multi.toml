@@ -1,0 +1,10 @@
+prefix = "/incoming"
+
+[[webhooks]]
+path = "unrestricted-authenticated"
+credential_env = ["PRIVATE_CREDENTIAL_REFERENCE"]
+
+[[webhooks]]
+path = "restricted-public"
+allow_organizers = ["private-organizer"]
+allow_events = ["private-event"]

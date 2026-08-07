@@ -1,22 +1,65 @@
-use std::{net::TcpListener, process::Command};
+use std::{
+    io::{BufRead, BufReader},
+    net::TcpListener,
+    process::{Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 #[test]
-fn warns_on_stderr_only_when_both_filters_are_omitted() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let bind = listener.local_addr().unwrap().to_string();
-
-    let unrestricted = command(&bind).output().unwrap();
-    let unrestricted_stderr = String::from_utf8(unrestricted.stderr).unwrap();
+fn simple_startup_reports_the_route_and_its_security_warnings() {
+    let unrestricted_stderr = startup_output(
+        command("127.0.0.1:0"),
+        "warning: no HTTP Basic credentials configured for /webhook",
+    );
+    assert!(unrestricted_stderr.contains("listening on http://127.0.0.1:"));
+    assert!(!unrestricted_stderr.contains("listening on http://127.0.0.1:0 "));
+    assert!(unrestricted_stderr.contains("with 1 route(s)"));
+    assert!(unrestricted_stderr.contains("pretix webhook route configured at /webhook"));
     assert!(unrestricted_stderr.contains(
         "warning: no filters configured for /webhook; accepting all events from all organizers"
     ));
+}
 
-    let restricted = command(&bind)
-        .args(["--allow-organizer", "acmecorp"])
-        .output()
-        .unwrap();
-    let restricted_stderr = String::from_utf8(restricted.stderr).unwrap();
-    assert!(!restricted_stderr.contains("warning: no filters configured"));
+#[test]
+fn multi_startup_reports_each_route_and_only_its_applicable_warnings() {
+    let config_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/startup-diagnostics-multi.toml"
+    );
+    let mut process = command("127.0.0.1:0");
+    process.args(["--config", config_path]).env(
+        "PRIVATE_CREDENTIAL_REFERENCE",
+        "private-user:private-password",
+    );
+
+    let stderr = startup_output(
+        process,
+        "warning: no HTTP Basic credentials configured for /incoming/restricted-public",
+    );
+
+    assert!(stderr.contains("with 2 route(s)"), "{stderr:?}");
+    assert!(
+        stderr.contains("pretix webhook route configured at /incoming/unrestricted-authenticated"),
+        "{stderr:?}"
+    );
+    assert!(
+        stderr.contains("pretix webhook route configured at /incoming/restricted-public"),
+        "{stderr:?}"
+    );
+    assert!(stderr.contains(
+        "warning: no filters configured for /incoming/unrestricted-authenticated; accepting all events from all organizers"
+    ));
+    assert!(!stderr.contains(
+        "warning: no HTTP Basic credentials configured for /incoming/unrestricted-authenticated"
+    ));
+    assert!(!stderr.contains("warning: no filters configured for /incoming/restricted-public"));
+    assert!(!stderr.contains("private-organizer"));
+    assert!(!stderr.contains("private-event"));
+    assert!(!stderr.contains("PRIVATE_CREDENTIAL_REFERENCE"));
+    assert!(!stderr.contains("private-user"));
+    assert!(!stderr.contains("private-password"));
 }
 
 #[test]
@@ -131,4 +174,50 @@ fn command(bind: &str) -> Command {
         .env_remove("PRETIX_WEBHOOK_PATH")
         .env_remove("PRETIX_WEBHOOK_PREFIX");
     command
+}
+
+fn startup_output(mut command: Command, final_diagnostic: &str) -> String {
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            sender.send(line.unwrap()).unwrap();
+        }
+    });
+    let mut output = String::new();
+
+    loop {
+        let line = match receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(line) => line,
+            Err(error) => {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                reader.join().unwrap();
+                panic!("timed out waiting for {final_diagnostic:?}: {error}; output: {output:?}");
+            }
+        };
+        output.push_str(&line);
+        output.push('\n');
+        if output.contains(final_diagnostic) {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "server exited during startup: {output:?}"
+            );
+            child.kill().unwrap();
+            child.wait().unwrap();
+            break;
+        }
+    }
+
+    reader.join().unwrap();
+    for line in receiver.try_iter() {
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output
 }
