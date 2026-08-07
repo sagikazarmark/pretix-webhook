@@ -69,7 +69,7 @@ the handler fails so pretix retries delivery.
 
 Optional library features provide terminal handlers:
 
-- `log`: `LogHandler` emits complete events through the `log` facade.
+- `log`: `LogHandler` emits semantic key-values through the `log` facade.
 - `tracing`: `TracingHandler` emits structured semantic fields through
   `tracing`.
 

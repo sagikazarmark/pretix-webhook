@@ -60,7 +60,7 @@ where
     }
 }
 
-/// A handler that logs complete events through the `log` facade.
+/// A handler that logs semantic event fields through the `log` facade.
 #[cfg(feature = "log")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LogHandler;
@@ -70,7 +70,14 @@ impl WebhookHandler for LogHandler {
     type Error = std::convert::Infallible;
 
     async fn handle(&self, event: WebhookEvent) -> Result<(), Self::Error> {
-        log::info!("received pretix webhook: {event:?}");
+        log::info!(
+            notification_id = event.notification_id(),
+            action = event.action(),
+            organizer = event.organizer_slug(),
+            pretix_event = event.event_slug(),
+            kind:? = event.kind();
+            "received pretix webhook"
+        );
         Ok(())
     }
 }
