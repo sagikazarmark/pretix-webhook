@@ -23,6 +23,8 @@ use crate::{
 struct AppState<H> {
     handler: H,
     config: WebhookConfig,
+    #[cfg(any(feature = "log", feature = "tracing"))]
+    route: Option<String>,
 }
 
 /// Builds multiple exact webhook endpoints beneath one global URL prefix.
@@ -71,7 +73,7 @@ impl MultiWebhookRouter {
         }
         self.router = self
             .router
-            .merge(build_webhook_router(&path, handler, config));
+            .merge(build_webhook_router(&path, Some(&path), handler, config));
         Ok(self)
     }
 
@@ -88,7 +90,7 @@ pub fn webhook_router<H>(handler: H, config: WebhookConfig) -> Router
 where
     H: WebhookHandler,
 {
-    build_webhook_router("/", handler, config)
+    build_webhook_router("/", None, handler, config)
 }
 
 /// Builds a router with a webhook endpoint at an exact path.
@@ -108,16 +110,29 @@ where
     H: WebhookHandler,
 {
     validate_absolute_webhook_path(path)?;
-    Ok(build_webhook_router(path, handler, config))
+    Ok(build_webhook_router(path, Some(path), handler, config))
 }
 
-fn build_webhook_router<H>(path: &str, handler: H, config: WebhookConfig) -> Router
+fn build_webhook_router<H>(
+    path: &str,
+    route: Option<&str>,
+    handler: H,
+    config: WebhookConfig,
+) -> Router
 where
     H: WebhookHandler,
 {
+    #[cfg(not(any(feature = "log", feature = "tracing")))]
+    let _ = route;
+
     Router::new()
         .route(path, post(receive::<H>))
-        .with_state(AppState { handler, config })
+        .with_state(AppState {
+            handler,
+            config,
+            #[cfg(any(feature = "log", feature = "tracing"))]
+            route: route.map(str::to_owned),
+        })
 }
 
 async fn receive<H>(State(state): State<AppState<H>>, headers: HeaderMap, body: Bytes) -> Response
@@ -144,9 +159,17 @@ where
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
             #[cfg(feature = "tracing")]
-            tracing::error!(%error, "pretix webhook handler failed");
+            if let Some(route) = state.route.as_deref() {
+                tracing::error!(%error, %route, "pretix webhook handler failed");
+            } else {
+                tracing::error!(%error, "pretix webhook handler failed");
+            }
             #[cfg(all(feature = "log", not(feature = "tracing")))]
-            log::error!("pretix webhook handler failed: {error}");
+            if let Some(route) = state.route.as_deref() {
+                log::error!(route; "pretix webhook handler failed: {error}");
+            } else {
+                log::error!("pretix webhook handler failed: {error}");
+            }
             #[cfg(not(any(feature = "log", feature = "tracing")))]
             let _ = error;
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

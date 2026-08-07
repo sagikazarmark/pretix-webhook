@@ -30,6 +30,7 @@ optional = true
 [dev-dependencies]
 tokio.workspace = true
 tower.workspace = true
+tracing-subscriber = { workspace = true, features = ["json"] }
 
 [lints]
 workspace = true

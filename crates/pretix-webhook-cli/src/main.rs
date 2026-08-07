@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let (bind, endpoint) = config.into_parts();
     let (path, webhook_config) = endpoint.into_parts();
-    let app = webhook_router_at(&path, selected_handler(), webhook_config)?;
+    let app = webhook_router_at(&path, selected_handler(&path)?, webhook_config)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     announce_listener(bind, &path);
@@ -24,18 +24,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(feature = "tracing")]
-fn selected_handler() -> pretix_webhook::TracingHandler {
-    pretix_webhook::TracingHandler
+fn selected_handler(
+    path: &str,
+) -> Result<impl pretix_webhook::WebhookHandler, pretix_webhook::WebhookPathError> {
+    pretix_webhook::TracingHandler::with_route(path)
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]
-fn selected_handler() -> pretix_webhook::LogHandler {
-    pretix_webhook::LogHandler
+fn selected_handler(
+    path: &str,
+) -> Result<impl pretix_webhook::WebhookHandler, pretix_webhook::WebhookPathError> {
+    pretix_webhook::LogHandler::with_route(path)
 }
 
 #[cfg(not(any(feature = "tracing", feature = "log")))]
-fn selected_handler() -> pretix_webhook::NoopHandler {
-    pretix_webhook::NoopHandler
+fn selected_handler(
+    _path: &str,
+) -> Result<impl pretix_webhook::WebhookHandler, pretix_webhook::WebhookPathError> {
+    Ok(pretix_webhook::NoopHandler)
 }
 
 #[cfg(feature = "tracing")]
