@@ -6,7 +6,7 @@ use axum::{
 };
 use clap::Parser;
 use pretix_webhook::{NoopHandler, webhook_router};
-use pretix_webhook_cli::{AllowedTarget, Config};
+use pretix_webhook_cli::Config;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -15,7 +15,8 @@ async fn reads_server_policy_and_credentials_from_environment() {
         [
             ("PRETIX_WEBHOOK_BIND", Some("0.0.0.0:8787")),
             ("PRETIX_WEBHOOK_PATH", Some("/hooks/pretix")),
-            ("PRETIX_WEBHOOK_ALLOW", Some("acmecorp/democon;other/*")),
+            ("PRETIX_WEBHOOK_ALLOW_ORGANIZERS", Some("acmecorp;other")),
+            ("PRETIX_WEBHOOK_ALLOW_EVENTS", Some("democon;conference")),
             (
                 "PRETIX_WEBHOOK_CREDENTIALS",
                 Some("old:secret;current:new-secret"),
@@ -29,20 +30,10 @@ async fn reads_server_policy_and_credentials_from_environment() {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8787)
     );
     assert_eq!(config.path(), "/hooks/pretix");
-    assert_eq!(
-        config.allowed_targets(),
-        [
-            AllowedTarget::Event {
-                organizer: "acmecorp".into(),
-                event: "democon".into(),
-            },
-            AllowedTarget::AllEvents {
-                organizer: "other".into(),
-            },
-        ]
-    );
+    assert_eq!(config.allowed_organizers(), ["acmecorp", "other"]);
+    assert_eq!(config.allowed_events(), ["democon", "conference"]);
 
-    let app = webhook_router(NoopHandler, config.webhook_config());
+    let app = webhook_router(NoopHandler, config.webhook_config().unwrap());
     let payload = r#"{
         "notification_id": 1,
         "organizer": "acmecorp",
@@ -64,19 +55,21 @@ async fn reads_server_policy_and_credentials_from_environment() {
 }
 
 #[tokio::test]
-async fn allowlist_is_optional_and_defaults_to_unrestricted() {
+async fn filters_are_optional_and_default_to_unrestricted() {
     let config = temp_env::with_vars(
         [
-            ("PRETIX_WEBHOOK_ALLOW", None::<&str>),
+            ("PRETIX_WEBHOOK_ALLOW_ORGANIZERS", None::<&str>),
+            ("PRETIX_WEBHOOK_ALLOW_EVENTS", None::<&str>),
             ("PRETIX_WEBHOOK_CREDENTIALS", None::<&str>),
         ],
         || Config::try_parse_from(["pretix-webhook"]).unwrap(),
     );
 
     assert!(config.is_unrestricted());
-    assert!(config.allowed_targets().is_empty());
+    assert!(config.allowed_organizers().is_empty());
+    assert!(config.allowed_events().is_empty());
 
-    let app = webhook_router(NoopHandler, config.webhook_config());
+    let app = webhook_router(NoopHandler, config.webhook_config().unwrap());
     let request = Request::post("/")
         .body(Body::from(
             r#"{
@@ -89,6 +82,50 @@ async fn allowlist_is_optional_and_defaults_to_unrestricted() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[test]
+fn organizer_and_event_flags_are_independently_repeatable() {
+    let config = Config::try_parse_from([
+        "pretix-webhook",
+        "--allow-organizer",
+        "acmecorp",
+        "--allow-event",
+        "democon",
+        "--allow-organizer",
+        "other",
+        "--allow-event",
+        "conference",
+    ])
+    .unwrap();
+
+    assert_eq!(config.allowed_organizers(), ["acmecorp", "other"]);
+    assert_eq!(config.allowed_events(), ["democon", "conference"]);
+}
+
+#[test]
+fn combined_allowlist_option_and_environment_variable_are_removed() {
+    let error =
+        Config::try_parse_from(["pretix-webhook", "--allow", "acmecorp/democon"]).unwrap_err();
+    assert!(error.to_string().contains("--allow"));
+
+    let config = temp_env::with_var("PRETIX_WEBHOOK_ALLOW", Some("acmecorp/democon"), || {
+        Config::try_parse_from(["pretix-webhook"]).unwrap()
+    });
+    assert!(config.is_unrestricted());
+}
+
+#[test]
+fn empty_and_whitespace_padded_filter_values_are_rejected() {
+    for (option, value) in [
+        ("--allow-organizer", ""),
+        ("--allow-organizer", " padded"),
+        ("--allow-event", ""),
+        ("--allow-event", "padded "),
+    ] {
+        let config = Config::try_parse_from(["pretix-webhook", option, value]).unwrap();
+        assert!(config.webhook_config().is_err());
+    }
 }
 
 #[test]

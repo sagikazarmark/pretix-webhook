@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt::{Debug, Formatter},
+    collections::BTreeSet,
+    fmt::{Debug, Display, Formatter},
 };
 
 use axum::http::{HeaderMap, header};
@@ -37,22 +37,24 @@ impl Debug for BasicAuthCredential {
 /// Authentication and organizer/event policy for a webhook endpoint.
 #[derive(Clone, Debug, Default)]
 pub struct WebhookConfig {
-    organizers: BTreeMap<String, AllowedEvents>,
-    unrestricted: bool,
+    organizers: BTreeSet<String>,
+    events: BTreeSet<String>,
     credentials: Vec<BasicAuthCredential>,
 }
 
-#[derive(Clone, Debug)]
-enum AllowedEvents {
-    All,
-    Only(BTreeSet<String>),
+/// An invalid organizer or event filter value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebhookFilterError {
+    message: String,
 }
 
-impl Default for AllowedEvents {
-    fn default() -> Self {
-        Self::Only(BTreeSet::new())
+impl Display for WebhookFilterError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
     }
 }
+
+impl std::error::Error for WebhookFilterError {}
 
 impl WebhookConfig {
     #[must_use]
@@ -60,31 +62,30 @@ impl WebhookConfig {
         Self::default()
     }
 
-    /// Clears configured restrictions and allows every organizer and event.
-    #[must_use]
-    pub fn allow_everything(mut self) -> Self {
-        self.organizers.clear();
-        self.unrestricted = true;
-        self
+    /// Allows payloads from one organizer slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookFilterError`] when `organizer` is empty or has leading
+    /// or trailing whitespace.
+    pub fn allow_organizer(
+        mut self,
+        organizer: impl Into<String>,
+    ) -> Result<Self, WebhookFilterError> {
+        self.organizers
+            .insert(validate_filter("organizer", organizer.into())?);
+        Ok(self)
     }
 
-    /// Allows organizer-level payloads and one event for an organizer.
-    #[must_use]
-    pub fn allow_event(mut self, organizer: impl Into<String>, event: impl Into<String>) -> Self {
-        self.unrestricted = false;
-        let events = self.organizers.entry(organizer.into()).or_default();
-        if let AllowedEvents::Only(events) = events {
-            events.insert(event.into());
-        }
-        self
-    }
-
-    /// Allows organizer-level payloads and every event for an organizer.
-    #[must_use]
-    pub fn allow_all_events(mut self, organizer: impl Into<String>) -> Self {
-        self.unrestricted = false;
-        self.organizers.insert(organizer.into(), AllowedEvents::All);
-        self
+    /// Allows payloads for one event slug, independently of organizer filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookFilterError`] when `event` is empty or has leading or
+    /// trailing whitespace.
+    pub fn allow_event(mut self, event: impl Into<String>) -> Result<Self, WebhookFilterError> {
+        self.events.insert(validate_filter("event", event.into())?);
+        Ok(self)
     }
 
     /// Requires any one of the supplied credentials.
@@ -98,20 +99,14 @@ impl WebhookConfig {
     }
 
     pub(super) fn allows(&self, event: &WebhookEvent) -> bool {
-        if self.unrestricted {
-            return true;
-        }
-        let Some(organizer) = event.organizer_slug() else {
-            return false;
-        };
-        let Some(events) = self.organizers.get(organizer) else {
-            return false;
-        };
-
-        match (events, event.event_slug()) {
-            (_, None) | (AllowedEvents::All, Some(_)) => true,
-            (AllowedEvents::Only(allowed), Some(event)) => allowed.contains(event),
-        }
+        (self.organizers.is_empty()
+            || event
+                .organizer_slug()
+                .is_some_and(|organizer| self.organizers.contains(organizer)))
+            && (self.events.is_empty()
+                || event
+                    .event_slug()
+                    .is_none_or(|event| self.events.contains(event)))
     }
 
     pub(super) fn authenticates(&self, headers: &HeaderMap) -> bool {
@@ -141,4 +136,20 @@ impl WebhookConfig {
                 }),
         )
     }
+}
+
+fn validate_filter(kind: &str, value: String) -> Result<String, WebhookFilterError> {
+    if value.is_empty() {
+        return Err(WebhookFilterError {
+            message: format!("invalid {kind} slug: it must not be empty"),
+        });
+    }
+    if value.trim() != value {
+        return Err(WebhookFilterError {
+            message: format!(
+                "invalid {kind} slug {value:?}: leading and trailing whitespace are not allowed"
+            ),
+        });
+    }
+    Ok(value)
 }

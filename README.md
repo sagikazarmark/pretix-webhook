@@ -43,8 +43,10 @@ let handler = handler_fn(|event| async move {
 });
 
 let config = WebhookConfig::new()
-    .allow_event("acmecorp", "democon")
-    .allow_all_events("another-organizer");
+    .allow_organizer("acmecorp")
+    .expect("valid organizer slug")
+    .allow_event("democon")
+    .expect("valid event slug");
 
 let router = webhook_router_at("/webhook", handler, config).expect("valid static path");
 # let _ = router;
@@ -55,7 +57,10 @@ Add rotating Basic authentication credentials in the HTTP layer:
 ```rust
 # use pretix_webhook::{BasicAuthCredential, WebhookConfig};
 let config = WebhookConfig::new()
-    .allow_event("acmecorp", "democon")
+    .allow_organizer("acmecorp")
+    .expect("valid organizer slug")
+    .allow_event("democon")
+    .expect("valid event slug")
     .require_basic_auth([
         BasicAuthCredential::new("old-user", "old-password"),
         BasicAuthCredential::new("current-user", "current-password"),
@@ -81,8 +86,9 @@ The CLI enables the `log` feature by default:
 
 ```console
 cargo run -p pretix-webhook-cli --bin pretix-webhook -- \
-  --allow acmecorp/democon \
-  --allow another-organizer/* \
+  --allow-organizer acmecorp \
+  --allow-organizer another-organizer \
+  --allow-event democon \
   --credential webhook-user:change-me
 ```
 
@@ -92,25 +98,30 @@ Every option has an environment equivalent:
 | --- | --- | --- |
 | `--bind` | `PRETIX_WEBHOOK_BIND` | `127.0.0.1:3000` |
 | `--path` | `PRETIX_WEBHOOK_PATH` | `/webhook` |
-| `--allow` | `PRETIX_WEBHOOK_ALLOW` | all organizers and events |
+| `--allow-organizer` | `PRETIX_WEBHOOK_ALLOW_ORGANIZERS` | all organizers |
+| `--allow-event` | `PRETIX_WEBHOOK_ALLOW_EVENTS` | all events |
 | `--credential` | `PRETIX_WEBHOOK_CREDENTIALS` | authentication disabled |
 
 Use semicolons between multiple values in environment variables:
 
 ```console
-PRETIX_WEBHOOK_ALLOW='acmecorp/democon;another-organizer/*' \
+PRETIX_WEBHOOK_ALLOW_ORGANIZERS='acmecorp;another-organizer' \
+PRETIX_WEBHOOK_ALLOW_EVENTS='democon;conference' \
 PRETIX_WEBHOOK_CREDENTIALS='old:secret;current:new-secret' \
 cargo run -p pretix-webhook-cli --bin pretix-webhook
 ```
 
-If no allowlist is supplied, the CLI prints a warning and accepts webhooks for
-all organizers and events.
+Organizer and event filters are independent and exact. Every non-empty
+applicable filter is enforced, while an omitted filter leaves that dimension
+unrestricted. Organizer-level payloads have no event slug, so they consult only
+the organizer filter. If both filters are omitted, the CLI prints a warning and
+accepts webhooks for all organizers and events.
 
 Build the CLI with structured tracing instead of default logging:
 
 ```console
 cargo run -p pretix-webhook-cli --bin pretix-webhook \
-  --no-default-features --features tracing -- --allow acmecorp/democon
+  --no-default-features --features tracing -- --allow-organizer acmecorp
 ```
 
 ## References

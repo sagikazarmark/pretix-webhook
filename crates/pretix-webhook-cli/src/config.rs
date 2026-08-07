@@ -5,9 +5,9 @@ use std::{
 };
 
 use clap::Parser;
-use pretix_webhook::{BasicAuthCredential, WebhookConfig, validate_absolute_webhook_path};
-
-use crate::allowed_target::AllowedTarget;
+use pretix_webhook::{
+    BasicAuthCredential, WebhookConfig, WebhookFilterError, validate_absolute_webhook_path,
+};
 
 #[derive(Clone)]
 struct Credential(BasicAuthCredential);
@@ -49,9 +49,21 @@ pub struct Config {
     )]
     path: String,
 
-    /// Allowed ORGANIZER/EVENT pair; use ORGANIZER/* for all events.
-    #[arg(long = "allow", env = "PRETIX_WEBHOOK_ALLOW", value_delimiter = ';')]
-    allowed_targets: Vec<AllowedTarget>,
+    /// Allowed organizer slug. May be supplied more than once.
+    #[arg(
+        long = "allow-organizer",
+        env = "PRETIX_WEBHOOK_ALLOW_ORGANIZERS",
+        value_delimiter = ';'
+    )]
+    allowed_organizers: Vec<String>,
+
+    /// Allowed event slug. May be supplied more than once.
+    #[arg(
+        long = "allow-event",
+        env = "PRETIX_WEBHOOK_ALLOW_EVENTS",
+        value_delimiter = ';'
+    )]
+    allowed_events: Vec<String>,
 
     /// Accepted USERNAME:PASSWORD pair. May be supplied more than once.
     #[arg(
@@ -74,37 +86,43 @@ impl Config {
     }
 
     #[must_use]
-    pub fn allowed_targets(&self) -> &[AllowedTarget] {
-        &self.allowed_targets
+    pub fn allowed_organizers(&self) -> &[String] {
+        &self.allowed_organizers
+    }
+
+    #[must_use]
+    pub fn allowed_events(&self) -> &[String] {
+        &self.allowed_events
     }
 
     #[must_use]
     pub fn is_unrestricted(&self) -> bool {
-        self.allowed_targets.is_empty()
+        self.allowed_organizers.is_empty() && self.allowed_events.is_empty()
     }
 
-    #[must_use]
-    pub fn webhook_config(&self) -> WebhookConfig {
-        let mut config = if self.is_unrestricted() {
-            WebhookConfig::new().allow_everything()
-        } else {
-            WebhookConfig::new()
-        };
-        for target in &self.allowed_targets {
-            config = match target {
-                AllowedTarget::Event { organizer, event } => config.allow_event(organizer, event),
-                AllowedTarget::AllEvents { organizer } => config.allow_all_events(organizer),
-            };
+    /// Builds the receiver policy represented by this configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookFilterError`] when an organizer or event value is empty
+    /// or whitespace-padded.
+    pub fn webhook_config(&self) -> Result<WebhookConfig, WebhookFilterError> {
+        let mut config = WebhookConfig::new();
+        for organizer in &self.allowed_organizers {
+            config = config.allow_organizer(organizer)?;
+        }
+        for event in &self.allowed_events {
+            config = config.allow_event(event)?;
         }
 
         if self.credentials.is_empty() {
-            config
+            Ok(config)
         } else {
-            config.require_basic_auth(
+            Ok(config.require_basic_auth(
                 self.credentials
                     .iter()
                     .map(|credential| credential.0.clone()),
-            )
+            ))
         }
     }
 }

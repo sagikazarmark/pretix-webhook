@@ -27,14 +27,19 @@ impl WebhookHandler for RecordingHandler {
     }
 }
 
+fn event_policy(organizer: &str, event: &str) -> WebhookConfig {
+    WebhookConfig::new()
+        .allow_organizer(organizer)
+        .unwrap()
+        .allow_event(event)
+        .unwrap()
+}
+
 #[tokio::test]
 async fn accepted_webhook_is_delivered_to_the_handler() {
     let handler = RecordingHandler::default();
     let recorded = Arc::clone(&handler.events);
-    let app = webhook_router(
-        handler,
-        WebhookConfig::new().allow_event("acmecorp", "democon"),
-    );
+    let app = webhook_router(handler, event_policy("acmecorp", "democon"));
     let request = Request::post("/")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -60,7 +65,11 @@ async fn accepted_webhook_is_delivered_to_the_handler() {
 async fn unsupported_organizers_and_events_are_hidden_with_not_found() {
     let app = webhook_router(
         RecordingHandler::default(),
-        WebhookConfig::new().allow_event("acmecorp", "democon"),
+        WebhookConfig::new()
+            .allow_organizer("acmecorp")
+            .unwrap()
+            .allow_event("democon")
+            .unwrap(),
     );
 
     for (organizer, event) in [("other", "democon"), ("acmecorp", "other")] {
@@ -84,40 +93,155 @@ async fn unsupported_organizers_and_events_are_hidden_with_not_found() {
 }
 
 #[tokio::test]
-async fn explicit_unrestricted_policy_accepts_every_organizer_and_event() {
-    let app = webhook_router(
-        RecordingHandler::default(),
-        WebhookConfig::new().allow_everything(),
-    );
-    let request = Request::post("/")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            r#"{
-                "notification_id": 1,
-                "organizer": "previously-unknown",
-                "event": "future-event",
-                "action": "pretix.event.changed"
-            }"#,
-        ))
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+async fn new_config_accepts_every_organizer_and_event() {
+    let app = webhook_router(RecordingHandler::default(), WebhookConfig::new());
+    for payload in [
+        r#"{
+            "notification_id": 1,
+            "organizer": "previously-unknown",
+            "event": "future-event",
+            "action": "pretix.event.changed"
+        }"#,
+        r#"{
+            "notification_id": 2,
+            "action": "pretix.plugin.unknown"
+        }"#,
+    ] {
+        let request = Request::post("/")
+            .header("content-type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 }
 
 #[tokio::test]
-async fn restrictions_added_after_allow_everything_replace_prior_restrictions() {
+async fn organizer_and_event_filters_are_independent() {
+    let cases = [
+        (
+            WebhookConfig::new().allow_organizer("acmecorp").unwrap(),
+            "acmecorp",
+            "any-event",
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            WebhookConfig::new().allow_organizer("acmecorp").unwrap(),
+            "other",
+            "any-event",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            WebhookConfig::new().allow_event("democon").unwrap(),
+            "any-organizer",
+            "democon",
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            WebhookConfig::new().allow_event("democon").unwrap(),
+            "any-organizer",
+            "other",
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (config, organizer, event, expected) in cases {
+        let app = webhook_router(RecordingHandler::default(), config);
+        let payload = format!(
+            r#"{{
+                "notification_id": 1,
+                "organizer": "{organizer}",
+                "event": "{event}",
+                "action": "pretix.event.changed"
+            }}"#
+        );
+        let request = Request::post("/").body(Body::from(payload)).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn organizer_level_payloads_enforce_only_the_organizer_filter() {
+    let config = event_policy("acmecorp", "event-filter-is-not-applicable");
+
+    for (organizer, expected) in [
+        ("acmecorp", StatusCode::NO_CONTENT),
+        ("other", StatusCode::NOT_FOUND),
+    ] {
+        let app = webhook_router(RecordingHandler::default(), config.clone());
+        let payload = format!(
+            r#"{{
+                "notification_id": 1,
+                "organizer": "{organizer}",
+                "customer": "customer-1",
+                "action": "pretix.customer.created"
+            }}"#
+        );
+        let request = Request::post("/").body(Body::from(payload)).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn unknown_payloads_cannot_bypass_applicable_filters_with_missing_fields() {
+    let organizer_filtered = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new().allow_organizer("acmecorp").unwrap(),
+    );
+    let missing_organizer = Request::post("/")
+        .body(Body::from(
+            r#"{
+                "notification_id": 1,
+                "event": "democon",
+                "action": "pretix.plugin.unknown"
+            }"#,
+        ))
+        .unwrap();
+    assert_eq!(
+        organizer_filtered
+            .oneshot(missing_organizer)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let event_filtered = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new().allow_event("democon").unwrap(),
+    );
+    let organizer_level = Request::post("/")
+        .body(Body::from(
+            r#"{
+                "notification_id": 1,
+                "organizer": "acmecorp",
+                "action": "pretix.plugin.organizer-level"
+            }"#,
+        ))
+        .unwrap();
+    assert_eq!(
+        event_filtered
+            .oneshot(organizer_level)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn filter_matching_is_exact_and_case_sensitive() {
     let app = webhook_router(
         RecordingHandler::default(),
-        WebhookConfig::new()
-            .allow_event("old", "old")
-            .allow_everything()
-            .allow_event("new", "new"),
+        event_policy("AcmeCorp", "DemoCon"),
     );
 
     for (organizer, event, expected) in [
-        ("old", "old", StatusCode::NOT_FOUND),
-        ("new", "new", StatusCode::NO_CONTENT),
+        ("AcmeCorp", "DemoCon", StatusCode::NO_CONTENT),
+        ("acmecorp", "DemoCon", StatusCode::NOT_FOUND),
+        ("AcmeCorp", "democon", StatusCode::NOT_FOUND),
     ] {
         let payload = format!(
             r#"{{
@@ -128,43 +252,37 @@ async fn restrictions_added_after_allow_everything_replace_prior_restrictions() 
             }}"#
         );
         let request = Request::post("/").body(Body::from(payload)).unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), expected);
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
     }
 }
 
-#[tokio::test]
-async fn organizer_can_allow_all_current_and_future_events() {
-    let app = webhook_router(
-        RecordingHandler::default(),
-        WebhookConfig::new().allow_all_events("acmecorp"),
-    );
-    let request = Request::post("/")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            r#"{
-                "notification_id": 1,
-                "organizer": "acmecorp",
-                "event": "future-event",
-                "action": "pretix.event.changed"
-            }"#,
-        ))
-        .unwrap();
+#[test]
+fn filter_values_reject_only_empty_or_padded_slugs() {
+    for value in ["", " padded", "padded ", "\tpadded"] {
+        assert!(WebhookConfig::new().allow_organizer(value).is_err());
+        assert!(WebhookConfig::new().allow_event(value).is_err());
+    }
 
-    let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let non_pretix_slug = format!("legacy:value-{}", "x".repeat(300));
+    assert!(
+        WebhookConfig::new()
+            .allow_organizer(&non_pretix_slug)
+            .is_ok()
+    );
+    assert!(WebhookConfig::new().allow_event(non_pretix_slug).is_ok());
 }
 
 #[tokio::test]
 async fn any_configured_basic_auth_credential_is_accepted() {
     let app = webhook_router(
         RecordingHandler::default(),
-        WebhookConfig::new()
-            .allow_event("acmecorp", "democon")
-            .require_basic_auth([
-                BasicAuthCredential::new("old", "secret"),
-                BasicAuthCredential::new("current", "new-secret"),
-            ]),
+        WebhookConfig::new().require_basic_auth([
+            BasicAuthCredential::new("old", "secret"),
+            BasicAuthCredential::new("current", "new-secret"),
+        ]),
     );
     let payload = r#"{
         "notification_id": 1,
@@ -206,10 +324,7 @@ async fn any_configured_basic_auth_credential_is_accepted() {
 
 #[tokio::test]
 async fn malformed_payload_returns_bad_request() {
-    let app = webhook_router(
-        RecordingHandler::default(),
-        WebhookConfig::new().allow_all_events("acmecorp"),
-    );
+    let app = webhook_router(RecordingHandler::default(), WebhookConfig::new());
     let request = Request::post("/")
         .header("content-type", "application/json")
         .body(Body::from("not json"))
@@ -217,6 +332,28 @@ async fn malformed_payload_returns_bad_request() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn authentication_is_checked_before_payload_parsing() {
+    let app = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new().require_basic_auth([BasicAuthCredential::new("user", "secret")]),
+    );
+    let unauthenticated = Request::post("/").body(Body::from("not json")).unwrap();
+    assert_eq!(
+        app.clone().oneshot(unauthenticated).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let authenticated = Request::post("/")
+        .header("authorization", "Basic dXNlcjpzZWNyZXQ=")
+        .body(Body::from("not json"))
+        .unwrap();
+    assert_eq!(
+        app.oneshot(authenticated).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[derive(Clone)]
@@ -232,10 +369,7 @@ impl WebhookHandler for FailingHandler {
 
 #[tokio::test]
 async fn handler_failure_returns_retryable_server_error() {
-    let app = webhook_router(
-        FailingHandler,
-        WebhookConfig::new().allow_event("acmecorp", "democon"),
-    );
+    let app = webhook_router(FailingHandler, WebhookConfig::new());
     let request = Request::post("/")
         .header("content-type", "application/json")
         .body(Body::from(
@@ -257,7 +391,7 @@ async fn router_can_mount_the_endpoint_at_an_exact_path() {
     let app = webhook_router_at(
         "/hooks/pretix",
         RecordingHandler::default(),
-        WebhookConfig::new().allow_event("acmecorp", "democon"),
+        WebhookConfig::new(),
     )
     .unwrap();
     let request = Request::post("/hooks/pretix")

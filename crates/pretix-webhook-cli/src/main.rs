@@ -13,7 +13,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let bind = config.bind();
     let path = config.path().to_owned();
-    let app = webhook_router_at(&path, selected_handler(), config.webhook_config())?;
+    let app = webhook_router_at(&path, selected_handler(), config.webhook_config()?)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     announce_listener(bind, &path);
@@ -61,7 +61,7 @@ fn announce_listener(bind: std::net::SocketAddr, path: &str) {
 }
 
 fn warn_unrestricted() {
-    eprintln!("warning: no allowlist configured; accepting all events from all organizers");
+    eprintln!("warning: no filters configured; accepting all events from all organizers");
 }
 
 #[cfg(all(not(feature = "tracing"), feature = "log"))]

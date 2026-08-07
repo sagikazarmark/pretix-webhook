@@ -5,7 +5,7 @@ mod handler;
 mod path;
 mod router;
 
-pub use config::{BasicAuthCredential, WebhookConfig};
+pub use config::{BasicAuthCredential, WebhookConfig, WebhookFilterError};
 #[cfg(feature = "log")]
 pub use handler::LogHandler;
 #[cfg(feature = "tracing")]
