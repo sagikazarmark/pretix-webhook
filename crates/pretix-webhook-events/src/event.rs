@@ -87,6 +87,26 @@ impl WebhookEvent {
         }
     }
 
+    /// Reports whether the payload concerns one specific event.
+    ///
+    /// A payload that carries an event field is event-level even when the field
+    /// cannot be read as a slug, so unreadable values fail an applicable event
+    /// filter instead of being treated as organizer-level.
+    #[must_use]
+    pub fn is_event_level(&self) -> bool {
+        match self {
+            Self::Order(_)
+            | Self::Checkin(_)
+            | Self::Event(_)
+            | Self::Voucher(_)
+            | Self::Subevent(_)
+            | Self::Item(_)
+            | Self::WaitingList(_) => true,
+            Self::Customer(_) | Self::GiftCard(_) | Self::GiftCardTransaction(_) => false,
+            Self::Unknown(event) => event.fields.contains_key("event"),
+        }
+    }
+
     #[must_use]
     pub fn event_slug(&self) -> Option<&str> {
         match self {

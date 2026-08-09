@@ -92,6 +92,10 @@ fn rejects_invalid_endpoint_configuration_before_binding() {
             stderr.contains(expected_error),
             "expected {expected_error:?} in {stderr:?}"
         );
+        assert!(
+            !stderr.contains(" padded"),
+            "filter value leaked: {stderr:?}"
+        );
         assert!(!stderr.contains("Address already in use"));
     }
 }
@@ -152,6 +156,16 @@ fn aggregated_configuration_validation_precedes_listener_binding() {
             "missing {expected:?} in {stderr:?}"
         );
     }
+    // Every accumulated error must be readable on its own line rather than
+    // escaped into one `Debug`-rendered string.
+    assert!(
+        !stderr.contains("\\n"),
+        "report was escaped onto one line: {stderr:?}"
+    );
+    assert!(
+        stderr.matches("\n- webhooks entry ").count() > 1,
+        "report was not rendered as a list: {stderr:?}"
+    );
     for sensitive in [
         "private-organizer",
         "private-event",

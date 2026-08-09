@@ -35,14 +35,42 @@ impl Debug for BasicAuthCredential {
 }
 
 /// Authentication and organizer/event policy for a webhook endpoint.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct WebhookConfig {
     organizers: BTreeSet<String>,
     events: BTreeSet<String>,
     credentials: Vec<BasicAuthCredential>,
 }
 
+/// Reports how much policy is configured without disclosing any of it.
+///
+/// Configured slugs are policy, not payload data, so they are redacted for the
+/// same reason [`BasicAuthCredential`] and [`WebhookFilterError`] are: a
+/// derived `Debug` would place them in any diagnostic that renders a
+/// configuration.
+impl Debug for WebhookConfig {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebhookConfig")
+            .field("organizers", &Redacted(self.organizers.len()))
+            .field("events", &Redacted(self.events.len()))
+            .field("credentials", &Redacted(self.credentials.len()))
+            .finish()
+    }
+}
+
+struct Redacted(usize);
+
+impl Debug for Redacted {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "<{} REDACTED>", self.0)
+    }
+}
+
 /// An invalid organizer or event filter value.
+///
+/// The rejected value is never included in the message so that diagnostics can
+/// be reported without disclosing configured policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebhookFilterError {
     message: String,
@@ -104,9 +132,10 @@ impl WebhookConfig {
                 .organizer_slug()
                 .is_some_and(|organizer| self.organizers.contains(organizer)))
             && (self.events.is_empty()
+                || !event.is_event_level()
                 || event
                     .event_slug()
-                    .is_none_or(|event| self.events.contains(event)))
+                    .is_some_and(|event| self.events.contains(event)))
     }
 
     pub(super) fn authenticates(&self, headers: &HeaderMap) -> bool {
@@ -147,7 +176,7 @@ fn validate_filter(kind: &str, value: String) -> Result<String, WebhookFilterErr
     if value.trim() != value {
         return Err(WebhookFilterError {
             message: format!(
-                "invalid {kind} slug {value:?}: leading and trailing whitespace are not allowed"
+                "invalid {kind} slug: leading and trailing whitespace are not allowed"
             ),
         });
     }

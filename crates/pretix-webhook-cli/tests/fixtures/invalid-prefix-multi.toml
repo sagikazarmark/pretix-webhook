@@ -1,0 +1,4 @@
+prefix = "not-absolute/"
+
+[[webhooks]]
+path = "route"

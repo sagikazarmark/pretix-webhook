@@ -9,7 +9,9 @@ use axum::{
     http::{Request, StatusCode},
     routing::get,
 };
-use pretix_webhook::{BasicAuthCredential, MultiWebhookRouter, WebhookConfig, WebhookHandler};
+use pretix_webhook::{
+    BasicAuthCredential, MultiWebhookRouter, WebhookConfig, WebhookHandler, WebhookRouterBuilder,
+};
 use pretix_webhook_events::WebhookEvent;
 use tower::ServiceExt;
 
@@ -246,6 +248,61 @@ async fn authentication_and_filters_are_isolated_per_route() {
     );
     assert_eq!(*first_deliveries.lock().unwrap(), 1);
     assert_eq!(*second_deliveries.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn exact_path_registration_dispatches_and_rejects_collisions() {
+    let counting_handler = CountingHandler::default();
+    let deliveries = Arc::clone(&counting_handler.deliveries);
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let action_handler = ActionHandler {
+        actions: Arc::clone(&actions),
+    };
+
+    let app = WebhookRouterBuilder::new()
+        .register_at(
+            "/hooks/sales/primary",
+            counting_handler,
+            WebhookConfig::new(),
+        )
+        .unwrap()
+        .register_at("/audit", action_handler, WebhookConfig::new())
+        .unwrap()
+        .finish();
+
+    assert_eq!(
+        app.clone()
+            .oneshot(request("/hooks/sales/primary"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        app.oneshot(request("/audit")).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(*deliveries.lock().unwrap(), 1);
+    assert_eq!(actions.lock().unwrap().as_slice(), ["pretix.event.changed"]);
+
+    let registered = WebhookRouterBuilder::new()
+        .register_at("/hooks", CountingHandler::default(), WebhookConfig::new())
+        .unwrap();
+    let Err(error) =
+        registered.register_at("/hooks", CountingHandler::default(), WebhookConfig::new())
+    else {
+        panic!("duplicate exact path was accepted");
+    };
+    assert!(error.to_string().contains("/hooks"));
+
+    let Err(error) = WebhookRouterBuilder::new().register_at(
+        "hooks/{organizer}",
+        CountingHandler::default(),
+        WebhookConfig::new(),
+    ) else {
+        panic!("invalid exact path was accepted");
+    };
+    assert!(error.to_string().contains("hooks/{organizer}"));
 }
 
 #[test]

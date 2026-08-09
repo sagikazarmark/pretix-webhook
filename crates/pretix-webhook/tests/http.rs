@@ -223,12 +223,35 @@ async fn unknown_payloads_cannot_bypass_applicable_filters_with_missing_fields()
         .unwrap();
     assert_eq!(
         event_filtered
+            .clone()
             .oneshot(organizer_level)
             .await
             .unwrap()
             .status(),
         StatusCode::NO_CONTENT
     );
+
+    for unreadable_event in ["12345", "null", "[\"democon\"]"] {
+        let payload = format!(
+            r#"{{
+                "notification_id": 1,
+                "organizer": "acmecorp",
+                "event": {unreadable_event},
+                "action": "pretix.plugin.unknown"
+            }}"#
+        );
+        let request = Request::post("/").body(Body::from(payload)).unwrap();
+        assert_eq!(
+            event_filtered
+                .clone()
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND,
+            "event field {unreadable_event} bypassed the event filter"
+        );
+    }
 }
 
 #[tokio::test]
@@ -273,6 +296,27 @@ fn filter_values_reject_only_empty_or_padded_slugs() {
             .is_ok()
     );
     assert!(WebhookConfig::new().allow_event(non_pretix_slug).is_ok());
+}
+
+#[test]
+fn debug_output_reports_policy_size_without_disclosing_it() {
+    let config = event_policy("private-organizer", "private-event")
+        .require_basic_auth([BasicAuthCredential::new("private-user", "private-secret")]);
+
+    let debug = format!("{config:?}");
+
+    for value in [
+        "private-organizer",
+        "private-event",
+        "private-user",
+        "private-secret",
+    ] {
+        assert!(!debug.contains(value), "value leaked in {debug:?}");
+    }
+    assert_eq!(
+        debug,
+        "WebhookConfig { organizers: <1 REDACTED>, events: <1 REDACTED>, credentials: <1 REDACTED> }"
+    );
 }
 
 #[tokio::test]

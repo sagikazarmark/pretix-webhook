@@ -64,26 +64,44 @@ pub struct Config {
     /// Allowed organizer slug. May be supplied more than once.
     #[arg(
         long = "allow-organizer",
-        env = "PRETIX_WEBHOOK_ALLOW_ORGANIZERS",
-        value_delimiter = ';'
+        long_help = "Allowed organizer slug. May be supplied more than once.\n\nWhen the flag is absent, PRETIX_WEBHOOK_ALLOW_ORGANIZERS supplies a semicolon-separated list."
     )]
     allowed_organizers: Vec<String>,
 
     /// Allowed event slug. May be supplied more than once.
     #[arg(
         long = "allow-event",
-        env = "PRETIX_WEBHOOK_ALLOW_EVENTS",
-        value_delimiter = ';'
+        long_help = "Allowed event slug. May be supplied more than once.\n\nWhen the flag is absent, PRETIX_WEBHOOK_ALLOW_EVENTS supplies a semicolon-separated list."
     )]
     allowed_events: Vec<String>,
 
     /// Accepted USERNAME:PASSWORD pair. May be supplied more than once.
     #[arg(
         long = "credential",
-        env = "PRETIX_WEBHOOK_CREDENTIALS",
-        value_delimiter = ';'
+        long_help = "Accepted USERNAME:PASSWORD pair. May be supplied more than once.\n\nWhen the flag is absent, PRETIX_WEBHOOK_CREDENTIALS supplies a semicolon-separated list."
     )]
     credentials: Vec<Credential>,
+}
+
+const ORGANIZERS_ENVIRONMENT: &str = "PRETIX_WEBHOOK_ALLOW_ORGANIZERS";
+const EVENTS_ENVIRONMENT: &str = "PRETIX_WEBHOOK_ALLOW_EVENTS";
+const CREDENTIALS_ENVIRONMENT: &str = "PRETIX_WEBHOOK_CREDENTIALS";
+
+/// Reads one semicolon-separated list-valued environment variable.
+///
+/// Splitting happens here rather than through a Clap value delimiter so that
+/// only the environment convention is semicolon-separated; a flag value is
+/// always exactly one entry. An unset variable is an omitted list, while an
+/// empty variable is a one-entry list so that an empty value stays a
+/// configuration error instead of silently meaning "unrestricted".
+fn semicolon_list(variable: &str) -> Result<Vec<String>, ConfigError> {
+    match std::env::var(variable) {
+        Ok(value) => Ok(value.split(';').map(str::to_owned).collect()),
+        Err(std::env::VarError::NotPresent) => Ok(Vec::new()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidSimple(format!(
+            "environment variable {variable:?} is not valid Unicode"
+        ))),
+    }
 }
 
 impl Config {
@@ -107,18 +125,53 @@ impl Config {
     ///
     /// Returns [`ConfigError`] when operating-mode inputs are mixed, the TOML
     /// source cannot be loaded, or an endpoint is invalid.
-    pub fn into_effective(self) -> Result<EffectiveConfig, ConfigError> {
-        if let Some(config_path) = self.file.clone() {
-            return self.into_multi_effective(&config_path);
+    pub fn into_effective(mut self) -> Result<EffectiveConfig, ConfigError> {
+        if self.allowed_organizers.is_empty() {
+            self.allowed_organizers = semicolon_list(ORGANIZERS_ENVIRONMENT)?;
         }
-        self.into_simple_effective()
+        if self.allowed_events.is_empty() {
+            self.allowed_events = semicolon_list(EVENTS_ENVIRONMENT)?;
+        }
+        // Kept unparsed so that multi mode reports the mode conflict rather
+        // than a credential error it would never have used.
+        let environment_credentials = if self.credentials.is_empty() {
+            semicolon_list(CREDENTIALS_ENVIRONMENT)?
+        } else {
+            Vec::new()
+        };
+
+        if let Some(config_path) = self.file.clone() {
+            return self.into_multi_effective(&config_path, &environment_credentials);
+        }
+        self.into_simple_effective(environment_credentials)
     }
 
-    fn into_simple_effective(self) -> Result<EffectiveConfig, ConfigError> {
+    fn into_simple_effective(
+        mut self,
+        environment_credentials: Vec<String>,
+    ) -> Result<EffectiveConfig, ConfigError> {
         if self.prefix.is_some() {
             return Err(ConfigError::MixedMode(
                 "--prefix and PRETIX_WEBHOOK_PREFIX require --config".to_owned(),
             ));
+        }
+        if contains_duplicates(&self.allowed_organizers) {
+            return Err(ConfigError::InvalidSimple(
+                "duplicate organizer slug".to_owned(),
+            ));
+        }
+        if contains_duplicates(&self.allowed_events) {
+            return Err(ConfigError::InvalidSimple(
+                "duplicate event slug".to_owned(),
+            ));
+        }
+        for value in environment_credentials {
+            let credential = value.parse::<Credential>().map_err(|error| {
+                ConfigError::InvalidSimple(format!(
+                    "credential in {CREDENTIALS_ENVIRONMENT} is invalid: {error}"
+                ))
+            })?;
+            self.credentials.push(credential);
         }
 
         let unrestricted = self.allowed_organizers.is_empty() && self.allowed_events.is_empty();
@@ -150,18 +203,19 @@ impl Config {
         })
     }
 
-    fn into_multi_effective(self, config_path: &Path) -> Result<EffectiveConfig, ConfigError> {
+    fn into_multi_effective(
+        self,
+        config_path: &Path,
+        environment_credentials: &[String],
+    ) -> Result<EffectiveConfig, ConfigError> {
         let document = read_toml_config(config_path)?;
 
-        let mut errors = self.multi_mode_conflict_errors();
+        let mut errors = self.multi_mode_conflict_errors(environment_credentials);
         if document.webhooks.is_empty() {
             errors.push("at least one [[webhooks]] entry is required".to_owned());
         }
 
-        let prefix = self
-            .prefix
-            .or(document.prefix)
-            .unwrap_or_else(|| "/webhook".to_owned());
+        let prefix = resolve_prefix(self.prefix, document.prefix.as_deref(), &mut errors);
         let prefix_is_valid = match validate_webhook_prefix(&prefix) {
             Ok(()) => true,
             Err(error) => {
@@ -212,34 +266,17 @@ impl Config {
 
             let route = route_context(route_number, path.as_deref());
             for organizer in &webhook.allow_organizers {
-                if let Some(message) = invalid_filter_message("organizer", organizer) {
-                    errors.push(format!("{route}: {message}"));
+                if let Err(error) = WebhookConfig::new().allow_organizer(organizer.as_str()) {
+                    errors.push(format!("{route}: {error}"));
                 }
             }
             for event in &webhook.allow_events {
-                if let Some(message) = invalid_filter_message("event", event) {
-                    errors.push(format!("{route}: {message}"));
+                if let Err(error) = WebhookConfig::new().allow_event(event.as_str()) {
+                    errors.push(format!("{route}: {error}"));
                 }
             }
 
-            let mut credentials = Vec::with_capacity(webhook.credential_env.len());
-            let mut visited_variables = HashSet::new();
-            for variable in &webhook.credential_env {
-                if !visited_variables.insert(variable) {
-                    continue;
-                }
-                match std::env::var(variable) {
-                    Ok(value) => match value.parse::<Credential>() {
-                        Ok(credential) => credentials.push(credential.0),
-                        Err(error) => errors.push(format!(
-                            "{route}: credential environment variable {variable:?} is invalid: {error}"
-                        )),
-                    },
-                    Err(_) => errors.push(format!(
-                        "{route}: credential environment variable {variable:?} is missing or not valid Unicode"
-                    )),
-                }
-            }
+            let credentials = resolve_credentials(&webhook.credential_env, &route, &mut errors);
 
             validated_webhooks.push(ValidatedWebhook {
                 webhook,
@@ -263,7 +300,7 @@ impl Config {
         })
     }
 
-    fn multi_mode_conflict_errors(&self) -> Vec<String> {
+    fn multi_mode_conflict_errors(&self, environment_credentials: &[String]) -> Vec<String> {
         let mut errors = Vec::new();
         if self.path.is_some() {
             errors.push("simple webhook path input cannot be combined with --config".to_owned());
@@ -275,7 +312,7 @@ impl Config {
         if !self.allowed_events.is_empty() {
             errors.push("simple event filter inputs cannot be combined with --config".to_owned());
         }
-        if !self.credentials.is_empty() {
+        if !self.credentials.is_empty() || !environment_credentials.is_empty() {
             errors.push("simple credential inputs cannot be combined with --config".to_owned());
         }
         errors
@@ -342,6 +379,52 @@ fn invalid_toml_config(path: &Path, message: &dyn Display) -> ConfigError {
     }
 }
 
+/// Resolves the effective global prefix for multi mode.
+///
+/// The file's own prefix is validated even when an override wins, so that a
+/// reusable configuration cannot rot unnoticed behind a deployment-specific
+/// flag or variable.
+fn resolve_prefix(
+    overriding_prefix: Option<String>,
+    file_prefix: Option<&str>,
+    errors: &mut Vec<String>,
+) -> String {
+    let Some(overriding_prefix) = overriding_prefix else {
+        return file_prefix.unwrap_or("/webhook").to_owned();
+    };
+    if let Some(file_prefix) = file_prefix {
+        if let Err(error) = validate_webhook_prefix(file_prefix) {
+            errors.push(format!("overridden TOML prefix is invalid: {error}"));
+        }
+    }
+    overriding_prefix
+}
+
+/// Resolves one route's referenced credentials from the environment.
+///
+/// Diagnostics name the route and the variable but never its value.
+fn resolve_credentials(
+    variables: &[String],
+    route: &str,
+    errors: &mut Vec<String>,
+) -> Vec<BasicAuthCredential> {
+    let mut credentials = Vec::with_capacity(variables.len());
+    for variable in variables {
+        match std::env::var(variable) {
+            Ok(value) => match value.parse::<Credential>() {
+                Ok(credential) => credentials.push(credential.0),
+                Err(error) => errors.push(format!(
+                    "{route}: credential environment variable {variable:?} is invalid: {error}"
+                )),
+            },
+            Err(_) => errors.push(format!(
+                "{route}: credential environment variable {variable:?} is missing or not valid Unicode"
+            )),
+        }
+    }
+    credentials
+}
+
 fn contains_duplicates(values: &[String]) -> bool {
     let mut unique = HashSet::new();
     values.iter().any(|value| !unique.insert(value))
@@ -369,14 +452,6 @@ fn duplicate_route_error(
             )
         },
     ))
-}
-
-fn invalid_filter_message(kind: &str, value: &str) -> Option<String> {
-    if value.is_empty() {
-        return Some(format!("invalid {kind} slug: it must not be empty"));
-    }
-    (value.trim() != value)
-        .then(|| format!("invalid {kind} slug: leading and trailing whitespace are not allowed"))
 }
 
 fn route_context(route_number: usize, path: Option<&str>) -> String {

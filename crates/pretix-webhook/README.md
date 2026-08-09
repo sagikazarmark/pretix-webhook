@@ -27,9 +27,10 @@ let router = webhook_router_at("/webhook", handler, config)?;
 ```
 
 Organizer and event filters are independent and exact. Every non-empty
-applicable filter is enforced. Organizer-level payloads have no event slug, so
-they consult only the organizer filter. An empty filter leaves that dimension
-unrestricted.
+applicable filter is enforced. Organizer-level payloads carry no event field, so
+they consult only the organizer filter; a payload that carries an event field
+whose value cannot be read as a slug is still event-level and fails a non-empty
+event filter. An empty filter leaves that dimension unrestricted.
 
 Add rotating credentials in the HTTP layer. Load passwords from your
 deployment's secret source rather than hard-coding them:
@@ -102,6 +103,10 @@ fn application(
 The example exposes `/hooks/sales/orders` and
 `/hooks/operations/checkins`. A request is dispatched only to the handler at
 its exact path; filters do not fan out requests between registrations.
+
+`WebhookRouterBuilder` is the same builder for callers that already hold exact
+absolute paths: `register_at` validates each path and returns an error on a
+collision, where merging two Axum routers that share a route would panic.
 
 The endpoint returns `204` on success, `400` for malformed payloads, `401` for
 failed authentication, `404` for unsupported organizers/events, and `500` when
