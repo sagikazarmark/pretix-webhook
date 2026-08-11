@@ -23,7 +23,7 @@ use crate::{
 struct AppState<H> {
     handler: H,
     config: WebhookConfig,
-    #[cfg(any(feature = "log", feature = "tracing"))]
+    #[cfg(feature = "tracing")]
     route: Option<String>,
 }
 
@@ -189,7 +189,7 @@ fn build_webhook_router<H>(
 where
     H: WebhookHandler,
 {
-    #[cfg(not(any(feature = "log", feature = "tracing")))]
+    #[cfg(not(feature = "tracing"))]
     let _ = route;
 
     Router::new()
@@ -197,7 +197,7 @@ where
         .with_state(AppState {
             handler,
             config,
-            #[cfg(any(feature = "log", feature = "tracing"))]
+            #[cfg(feature = "tracing")]
             route: route.map(str::to_owned),
         })
 }
@@ -206,7 +206,53 @@ async fn receive<H>(State(state): State<AppState<H>>, headers: HeaderMap, body: 
 where
     H: WebhookHandler,
 {
+    // The span is created before the request is consumed so that everything the
+    // handler emits inherits the route and the event's identity.
+    #[cfg(feature = "tracing")]
+    let span = request_span(state.route.as_deref());
+    let response = respond(state, headers, body);
+    #[cfg(feature = "tracing")]
+    let response = tracing::Instrument::instrument(response, span);
+    response.await
+}
+
+/// Opens the request span with the event's identity left empty until the
+/// payload parses.
+///
+/// A `route` of `None` leaves the field unrecorded: [`webhook_router`] is meant
+/// to be nested, so the path it is finally served at is not known here.
+#[cfg(feature = "tracing")]
+fn request_span(route: Option<&str>) -> tracing::Span {
+    use tracing::field::Empty;
+
+    tracing::info_span!(
+        "pretix_webhook",
+        route,
+        notification_id = Empty,
+        action = Empty,
+        organizer = Empty,
+        pretix_event = Empty,
+        kind = Empty,
+    )
+}
+
+#[cfg(feature = "tracing")]
+fn record_identity(event: &WebhookEvent) {
+    let span = tracing::Span::current();
+    span.record("notification_id", event.notification_id());
+    span.record("action", event.action());
+    span.record("organizer", event.organizer_slug());
+    span.record("pretix_event", event.event_slug());
+    span.record("kind", tracing::field::debug(event.kind()));
+}
+
+async fn respond<H>(state: AppState<H>, headers: HeaderMap, body: Bytes) -> Response
+where
+    H: WebhookHandler,
+{
     if !state.config.authenticates(&headers) {
+        #[cfg(feature = "tracing")]
+        tracing::warn!("rejected unauthenticated pretix webhook request");
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Basic realm=\"pretix-webhook\"")],
@@ -214,30 +260,37 @@ where
             .into_response();
     }
 
-    let Ok(event) = serde_json::from_slice::<WebhookEvent>(&body) else {
-        return StatusCode::BAD_REQUEST.into_response();
+    let event = match serde_json::from_slice::<WebhookEvent>(&body) {
+        Ok(event) => event,
+        Err(error) => {
+            #[cfg(feature = "tracing")]
+            tracing::warn!(%error, "rejected malformed pretix webhook payload");
+            #[cfg(not(feature = "tracing"))]
+            let _ = error;
+            return StatusCode::BAD_REQUEST.into_response();
+        }
     };
 
+    #[cfg(feature = "tracing")]
+    record_identity(&event);
+
     if !state.config.allows(&event) {
+        #[cfg(feature = "tracing")]
+        tracing::debug!("rejected filtered pretix webhook event");
         return StatusCode::NOT_FOUND.into_response();
     }
+
+    // Emitted before dispatch so a handler that fails, panics, or hangs still
+    // leaves a record that the event was accepted.
+    #[cfg(feature = "tracing")]
+    tracing::info!("received pretix webhook");
 
     match state.handler.handle(event).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
             #[cfg(feature = "tracing")]
-            if let Some(route) = state.route.as_deref() {
-                tracing::error!(%error, %route, "pretix webhook handler failed");
-            } else {
-                tracing::error!(%error, "pretix webhook handler failed");
-            }
-            #[cfg(all(feature = "log", not(feature = "tracing")))]
-            if let Some(route) = state.route.as_deref() {
-                log::error!(route; "pretix webhook handler failed: {error}");
-            } else {
-                log::error!("pretix webhook handler failed: {error}");
-            }
-            #[cfg(not(any(feature = "log", feature = "tracing")))]
+            tracing::error!(%error, "pretix webhook handler failed");
+            #[cfg(not(feature = "tracing"))]
             let _ = error;
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
