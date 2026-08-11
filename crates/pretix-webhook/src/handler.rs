@@ -4,8 +4,21 @@ use pretix_webhook_events::WebhookEvent;
 
 /// Processes accepted webhook events.
 pub trait WebhookHandler: Clone + Send + Sync + 'static {
+    /// The failure returned when an accepted event cannot be processed.
+    ///
+    /// The router responds with `500 Internal Server Error` when a handler
+    /// returns this error so pretix can retry the delivery.
     type Error: Display + Send + Sync + 'static;
 
+    /// Processes one authenticated, parsed event that passed its filters.
+    ///
+    /// Returning an error produces a `500 Internal Server Error` response.
+    ///
+    /// # Errors
+    ///
+    /// Error conditions are defined by each handler implementation. Any error
+    /// returned here becomes a `500 Internal Server Error` response so pretix
+    /// can retry the delivery.
     fn handle(&self, event: WebhookEvent) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 

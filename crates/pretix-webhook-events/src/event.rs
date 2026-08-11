@@ -9,36 +9,59 @@ use crate::payload::{
 /// The payload family selected from a webhook action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebhookEventKind {
+    /// An order lifecycle event.
     Order,
+    /// A ticket check-in or reverted check-in event.
     Checkin,
+    /// An event configuration or lifecycle event.
     Event,
+    /// A voucher event.
     Voucher,
+    /// An event-series date event.
     Subevent,
+    /// An item or quota event.
     Item,
+    /// A waiting-list event.
     WaitingList,
+    /// An organizer customer event.
     Customer,
+    /// A gift-card event other than a transaction.
     GiftCard,
+    /// A gift-card transaction event.
     GiftCardTransaction,
+    /// A plugin-defined or otherwise unrecognized action.
     Unknown,
 }
 
 /// A typed pretix webhook payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WebhookEvent {
+    /// An order lifecycle payload.
     Order(OrderEvent),
+    /// A ticket check-in or reverted check-in payload.
     Checkin(CheckinEvent),
+    /// An event configuration or lifecycle payload.
     Event(EventEvent),
+    /// A voucher payload.
     Voucher(VoucherEvent),
+    /// An event-series date payload.
     Subevent(SubeventEvent),
+    /// An item or quota payload.
     Item(ItemEvent),
+    /// A waiting-list payload.
     WaitingList(WaitingListEvent),
+    /// An organizer customer payload.
     Customer(CustomerEvent),
+    /// A gift-card payload other than a transaction.
     GiftCard(GiftCardEvent),
+    /// A gift-card transaction payload.
     GiftCardTransaction(GiftCardTransactionEvent),
+    /// A valid payload whose action is not recognized by this crate.
     Unknown(UnknownEvent),
 }
 
 impl WebhookEvent {
+    /// Returns the payload family selected from the action.
     #[must_use]
     pub fn kind(&self) -> WebhookEventKind {
         match self {
@@ -56,16 +79,22 @@ impl WebhookEvent {
         }
     }
 
+    /// Returns the delivery identifier supplied by pretix.
     #[must_use]
     pub fn notification_id(&self) -> u64 {
         self.notification().notification_id
     }
 
+    /// Returns the exact action string supplied by pretix.
     #[must_use]
     pub fn action(&self) -> &str {
         &self.notification().action
     }
 
+    /// Returns the organizer slug used for filtering, when present and valid.
+    ///
+    /// Gift-card payloads use their `issuer_slug`. Unknown payloads inspect the
+    /// conventional `organizer` and `issuer_slug` fields.
     #[must_use]
     pub fn organizer_slug(&self) -> Option<&str> {
         match self {
@@ -107,6 +136,10 @@ impl WebhookEvent {
         }
     }
 
+    /// Returns the event slug used for filtering, when present and valid.
+    ///
+    /// Organizer-level payloads return `None`. Unknown payloads inspect the
+    /// conventional `event` field.
     #[must_use]
     pub fn event_slug(&self) -> Option<&str> {
         match self {
@@ -122,6 +155,7 @@ impl WebhookEvent {
         }
     }
 
+    /// Borrows the payload when this is an order event.
     #[must_use]
     pub fn as_order(&self) -> Option<&OrderEvent> {
         if let Self::Order(event) = self {
@@ -131,6 +165,7 @@ impl WebhookEvent {
         }
     }
 
+    /// Borrows the payload when this is a check-in event.
     #[must_use]
     pub fn as_checkin(&self) -> Option<&CheckinEvent> {
         if let Self::Checkin(event) = self {

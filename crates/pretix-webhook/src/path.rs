@@ -82,6 +82,7 @@ pub fn validate_relative_webhook_path(path: &str) -> Result<(), WebhookPathError
             "invalid {subject} {path:?}: leading slashes are not allowed"
         )));
     }
+
     if path.ends_with('/') {
         return Err(WebhookPathError::new(format!(
             "invalid {subject} {path:?}: trailing slashes are not allowed"
@@ -102,11 +103,13 @@ fn validate_segments(
                 "invalid {subject} {full_path:?}: empty path segments are not allowed"
             )));
         }
+
         if matches!(segment, "." | "..") {
             return Err(WebhookPathError::new(format!(
                 "invalid {subject} {full_path:?}: '.' and '..' segments are not allowed"
             )));
         }
+
         if let Some(character) = segment
             .chars()
             .find(|character| !is_url_unreserved_ascii(*character))
@@ -116,6 +119,7 @@ fn validate_segments(
             )));
         }
     }
+
     Ok(())
 }
 

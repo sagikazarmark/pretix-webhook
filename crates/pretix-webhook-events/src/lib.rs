@@ -108,10 +108,11 @@
 //! # Unknown and plugin actions
 //!
 //! Actions from plugins, or added by a future pretix release, deserialize into
-//! [`UnknownEvent`] instead of failing. All JSON fields are kept in
-//! [`fields`](UnknownEvent::fields), and the accessors above still work by
-//! reading the conventional field names, so unknown events can be filtered and
-//! forwarded losslessly:
+//! [`UnknownEvent`] when the common envelope contains a non-negative integer
+//! `notification_id` representable as `u64` and a string `action`. All other
+//! JSON fields are kept in [`fields`](UnknownEvent::fields), and the accessors
+//! above still work by reading the conventional field names, so valid unknown
+//! events can be filtered and forwarded without discarding fields:
 //!
 //! ```
 //! use pretix_webhook_events::{WebhookEvent, WebhookEventKind};
@@ -134,8 +135,9 @@
 //! # Ok::<(), serde_json::Error>(())
 //! ```
 //!
-//! A payload without an `action` field is the only body this crate rejects
-//! outright; everything else parses into some family.
+//! Payloads with a missing or invalid common envelope are rejected. Known
+//! actions are also validated against their typed payload and are rejected when
+//! required fields are missing or have the wrong type.
 
 mod event;
 mod payload;

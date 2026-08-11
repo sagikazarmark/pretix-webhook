@@ -1,14 +1,18 @@
 # pretix-webhook-events
 
-Typed payloads sent by [pretix webhooks], with no HTTP dependency. Use this
-crate directly to parse, inspect, or forward payloads; `pretix-webhook` builds
-an Axum receiver on top of it.
+[![crates.io](https://img.shields.io/crates/v/pretix-webhook-events?style=flat-square)](https://crates.io/crates/pretix-webhook-events)
+[![docs.rs](https://img.shields.io/docsrs/pretix-webhook-events?style=flat-square)](https://docs.rs/pretix-webhook-events)
+
+**Typed payloads sent by [pretix webhooks](https://docs.pretix.eu/dev/api/webhooks.html), with no HTTP dependency.**
+
+Use this crate directly to parse, inspect, or forward payloads;
+`pretix-webhook` builds an Axum receiver on top of it.
 
 Pretix only guarantees `notification_id` and `action` across all core payloads.
 `WebhookEvent` dispatches known core actions to their actual payload shapes and
 preserves plugin-defined actions in `UnknownEvent`.
 
-## Parsing a payload
+## Quick Start
 
 `WebhookEvent` implements `Deserialize`, so a delivery body parses in one step
 and the action selects the payload family:
@@ -16,22 +20,25 @@ and the action selects the payload family:
 ```rust
 use pretix_webhook_events::WebhookEvent;
 
-let event: WebhookEvent = serde_json::from_str(
-    r#"{
-        "notification_id": 123455,
-        "organizer": "acmecorp",
-        "event": "democon",
-        "code": "ABC23",
-        "action": "pretix.event.order.placed"
-    }"#,
-)?;
+fn main() -> Result<(), serde_json::Error> {
+    let event: WebhookEvent = serde_json::from_str(
+        r#"{
+            "notification_id": 123455,
+            "organizer": "acmecorp",
+            "event": "democon",
+            "code": "ABC23",
+            "action": "pretix.event.order.placed"
+        }"#,
+    )?;
 
-assert_eq!(event.notification_id(), 123_455);
-assert_eq!(event.action(), "pretix.event.order.placed");
+    assert_eq!(event.notification_id(), 123_455);
+    assert_eq!(event.action(), "pretix.event.order.placed");
 
-let order = event.as_order().expect("an order action carries an order payload");
-assert_eq!(order.code, "ABC23");
-# Ok::<(), serde_json::Error>(())
+    let order = event.as_order().expect("an order action carries an order payload");
+    assert_eq!(order.code, "ABC23");
+
+    Ok(())
+}
 ```
 
 Payloads are only triggers: fetch trusted state from the authenticated pretix
@@ -84,29 +91,32 @@ fn accepts(event: &WebhookEvent, organizer: &str, allowed_event: &str) -> bool {
     !event.is_event_level() || event.event_slug() == Some(allowed_event)
 }
 
-let checkin: WebhookEvent = serde_json::from_str(
-    r#"{
-        "notification_id": 42,
-        "organizer": "acmecorp",
-        "event": "democon",
-        "code": "ABC23",
-        "action": "pretix.event.checkin",
-        "first_checkin": true
-    }"#,
-)?;
-assert!(accepts(&checkin, "acmecorp", "democon"));
+fn main() -> Result<(), serde_json::Error> {
+    let checkin: WebhookEvent = serde_json::from_str(
+        r#"{
+            "notification_id": 42,
+            "organizer": "acmecorp",
+            "event": "democon",
+            "code": "ABC23",
+            "action": "pretix.event.checkin",
+            "first_checkin": true
+        }"#,
+    )?;
+    assert!(accepts(&checkin, "acmecorp", "democon"));
 
-let gift_card: WebhookEvent = serde_json::from_str(
-    r#"{
-        "notification_id": 43,
-        "issuer_id": 4,
-        "issuer_slug": "acmecorp",
-        "giftcard": 21,
-        "action": "pretix.giftcards.created"
-    }"#,
-)?;
-assert!(accepts(&gift_card, "acmecorp", "democon"));
-# Ok::<(), serde_json::Error>(())
+    let gift_card: WebhookEvent = serde_json::from_str(
+        r#"{
+            "notification_id": 43,
+            "issuer_id": 4,
+            "issuer_slug": "acmecorp",
+            "giftcard": 21,
+            "action": "pretix.giftcards.created"
+        }"#,
+    )?;
+    assert!(accepts(&gift_card, "acmecorp", "democon"));
+
+    Ok(())
+}
 ```
 
 `organizer_slug` reads `issuer_slug` for gift-card payloads, so gift cards
@@ -119,41 +129,58 @@ organizer-level.
 ## Unknown and plugin actions
 
 Actions from plugins, or added by a future pretix release, deserialize into
-`UnknownEvent` instead of failing. All JSON fields are kept in `fields`, and
+`UnknownEvent` when the common envelope contains a non-negative integer
+`notification_id` representable as `u64` and a string `action`. All other JSON
+fields are kept in `fields`, and
 `organizer_slug`, `event_slug`, and `is_event_level` still work by reading the
-conventional field names, so unknown events can be filtered and forwarded
-losslessly:
+conventional field names, so valid unknown events can be filtered and forwarded
+without discarding fields:
 
 ```rust
 use pretix_webhook_events::{WebhookEvent, WebhookEventKind};
 
-let input = serde_json::json!({
-    "notification_id": 99,
-    "organizer": "acmecorp",
-    "event": "democon",
-    "action": "pretix.plugin.badge.printed",
-    "badge_id": 123,
-    "nested": { "value": true }
-});
+fn main() -> Result<(), serde_json::Error> {
+    let input = serde_json::json!({
+        "notification_id": 99,
+        "organizer": "acmecorp",
+        "event": "democon",
+        "action": "pretix.plugin.badge.printed",
+        "badge_id": 123,
+        "nested": { "value": true }
+    });
 
-let event: WebhookEvent = serde_json::from_value(input.clone())?;
+    let event: WebhookEvent = serde_json::from_value(input.clone())?;
 
-assert_eq!(event.kind(), WebhookEventKind::Unknown);
-assert_eq!(event.organizer_slug(), Some("acmecorp"));
-assert_eq!(event.event_slug(), Some("democon"));
-assert_eq!(serde_json::to_value(&event)?, input);
-# Ok::<(), serde_json::Error>(())
+    assert_eq!(event.kind(), WebhookEventKind::Unknown);
+    assert_eq!(event.organizer_slug(), Some("acmecorp"));
+    assert_eq!(event.event_slug(), Some("democon"));
+    assert_eq!(serde_json::to_value(&event)?, input);
+
+    Ok(())
+}
 ```
 
-A payload without an `action` field is the only body this crate rejects
-outright; everything else parses into some family.
+Payloads with a missing or invalid common envelope are rejected. Known actions
+are also validated against their typed payload and are rejected when required
+fields are missing or have the wrong type.
 
 ## References
 
-- [Pretix webhook receiving and retry behavior][pretix webhooks]
-- [Pretix core webhook action types]
-- [Pretix core payload builders]
+- [Pretix webhook receiving and retry behavior](https://docs.pretix.eu/dev/api/webhooks.html)
+- [Pretix core webhook action types](https://docs.pretix.eu/dev/api/resources/webhooks.html)
+- [Pretix core payload builders](https://github.com/pretix/pretix/blob/master/src/pretix/api/webhooks.py)
 
-[pretix webhooks]: https://docs.pretix.eu/dev/api/webhooks.html
-[Pretix core webhook action types]: https://docs.pretix.eu/dev/api/resources/webhooks.html
-[Pretix core payload builders]: https://github.com/pretix/pretix/blob/master/src/pretix/api/webhooks.py
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

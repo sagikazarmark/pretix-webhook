@@ -392,11 +392,13 @@ fn resolve_prefix(
     let Some(overriding_prefix) = overriding_prefix else {
         return file_prefix.unwrap_or("/webhook").to_owned();
     };
+
     if let Some(file_prefix) = file_prefix {
         if let Err(error) = validate_webhook_prefix(file_prefix) {
             errors.push(format!("overridden TOML prefix is invalid: {error}"));
         }
     }
+
     overriding_prefix
 }
 
@@ -409,6 +411,7 @@ fn resolve_credentials(
     errors: &mut Vec<String>,
 ) -> Vec<BasicAuthCredential> {
     let mut credentials = Vec::with_capacity(variables.len());
+
     for variable in variables {
         match std::env::var(variable) {
             Ok(value) => match value.parse::<Credential>() {
@@ -422,6 +425,7 @@ fn resolve_credentials(
             )),
         }
     }
+
     credentials
 }
 

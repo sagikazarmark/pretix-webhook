@@ -41,9 +41,17 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     report_startup(listener.local_addr()?, &diagnostics);
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_sender
+                .send(tokio::signal::ctrl_c().await)
+                .expect("shutdown receiver remains alive while the server runs");
+        })
         .await?;
+    shutdown_receiver.await??;
+
     Ok(())
 }
 
@@ -92,11 +100,5 @@ fn report_startup(bind: std::net::SocketAddr, endpoints: &[StartupRoute]) {
         if endpoint.unauthenticated {
             warn_unauthenticated(&endpoint.path);
         }
-    }
-}
-
-async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("failed to install shutdown signal handler: {error}");
     }
 }

@@ -1,10 +1,10 @@
 # pretix-webhook
 
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/pretix-webhook/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/pretix-webhook)
+[![openssf scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/pretix-webhook/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/pretix-webhook)
 [![crates.io](https://img.shields.io/crates/v/pretix-webhook?style=flat-square)](https://crates.io/crates/pretix-webhook)
 [![docs.rs](https://img.shields.io/docsrs/pretix-webhook?style=flat-square)](https://docs.rs/pretix-webhook)
 
-**Receive and process [pretix webhooks] in Rust.**
+**Receive and process [pretix webhooks](https://docs.pretix.eu/dev/api/webhooks.html) in Rust.**
 
 ## Features
 
@@ -70,9 +70,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Point a pretix webhook at `http://your-host:3000/webhook` and it will accept
-deliveries for the `acmecorp` organizer's `democon` event. Filters are
-independent and exact; an omitted filter leaves that dimension unrestricted.
+Point a pretix webhook at `https://your-host/webhook` and it will accept
+deliveries for the `acmecorp` organizer's `democon` event. Terminate TLS at the
+application or a trusted reverse proxy before using HTTP Basic authentication.
+Filters are independent and exact; an omitted filter leaves that dimension
+unrestricted.
 
 Add HTTP Basic authentication to the config, loading passwords from your
 deployment's secret source rather than hard-coding them:
@@ -130,86 +132,53 @@ notifications can be duplicated, so handlers should be idempotent.
 
 `NoopHandler` is always available for a receiver that only observes. The
 optional `tracing` feature instruments the endpoint itself rather than
-providing a handler: every request opens a span carrying the route and the
-event's identity, which a handler's own records inherit.
+providing a handler: each POST request that reaches the webhook handler after
+routing and body extraction opens a span carrying the route and the event's
+identity, which a handler's own records inherit.
 
 ## Multiple webhooks
 
 `MultiWebhookRouter` registers exact relative paths beneath one absolute
 prefix. Every registration has its own filters, credentials, and handler, and
 path collisions are reported as errors instead of panics. `finish` returns an
-ordinary Axum router that can be merged into a larger application:
+ordinary Axum router that can be merged into a larger application. See the
+compile-checked
+[`multiple_webhooks.rs`](crates/pretix-webhook/examples/multiple_webhooks.rs) example
+for a complete configuration.
 
-```rust
-use axum::{Router, routing::get};
-use pretix_webhook::{
-    BasicAuthCredential, MultiWebhookRouter, NoopHandler, WebhookConfig,
-    handler_fn,
-};
-use pretix_webhook_events::WebhookEvent;
-
-fn application(
-    sales_password: &str,
-    operations_password: &str,
-) -> Result<Router, Box<dyn std::error::Error>> {
-    let sales = WebhookConfig::new()
-        .allow_organizer("acmecorp")?
-        .allow_event("democon")?
-        .require_basic_auth([BasicAuthCredential::new(
-            "sales-webhook",
-            sales_password,
-        )]);
-    let operations = WebhookConfig::new()
-        .allow_organizer("acmecorp")?
-        .require_basic_auth([BasicAuthCredential::new(
-            "operations-webhook",
-            operations_password,
-        )]);
-
-    let webhooks = MultiWebhookRouter::new("/hooks")?
-        .register(
-            "sales/orders",
-            handler_fn(|event: WebhookEvent| async move {
-                println!("sales event: {}", event.action());
-                Ok::<_, std::convert::Infallible>(())
-            }),
-            sales,
-        )?
-        .register("operations/checkins", NoopHandler, operations)?
-        .finish();
-
-    Ok(Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .merge(webhooks))
-}
-```
-
-The example exposes `/hooks/sales/orders` and `/hooks/operations/checkins`.
+The example configures `/hooks/sales/orders` and `/hooks/operations/checkins`.
 A request is dispatched only to the handler at its exact path; filters do not
 fan out requests between registrations.
 
-See the [receiver library guide] for checked examples covering the endpoint's
-response codes, filter semantics, `WebhookRouterBuilder` for absolute paths,
-and Axum composition.
+See the [receiver library guide](crates/pretix-webhook/README.md) for checked
+examples covering the endpoint's response codes, filter semantics,
+`WebhookRouterBuilder` for absolute paths, and Axum composition.
 
 ## References
 
-- [Pretix webhook receiving and retry behavior][pretix webhooks]
-- [Pretix core webhook action types]
-- [Pretix core payload builders]
+- [Pretix webhook receiving and retry behavior](https://docs.pretix.eu/dev/api/webhooks.html)
+- [Pretix core webhook action types](https://docs.pretix.eu/dev/api/resources/webhooks.html)
+- [Pretix core payload builders](https://github.com/pretix/pretix/blob/master/src/pretix/api/webhooks.py)
 
-[pretix webhooks]: https://docs.pretix.eu/dev/api/webhooks.html
-[Pretix core webhook action types]: https://docs.pretix.eu/dev/api/resources/webhooks.html
-[Pretix core payload builders]: https://github.com/pretix/pretix/blob/master/src/pretix/api/webhooks.py
-[receiver library guide]: crates/pretix-webhook/README.md
-[CLI operator guide]: crates/pretix-webhook-cli/README.md
+## Development
+
+The workspace requires Rust 1.85 or newer. Run the same local checks used to
+validate changes with the tracked lockfile:
+
+```console
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo test --workspace --doc --locked
+cargo doc --workspace --no-deps --all-features --locked
+```
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
 

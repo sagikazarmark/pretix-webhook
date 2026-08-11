@@ -367,6 +367,28 @@ async fn any_configured_basic_auth_credential_is_accepted() {
 }
 
 #[tokio::test]
+async fn empty_basic_auth_credentials_disable_authentication() {
+    let app = webhook_router(
+        RecordingHandler::default(),
+        WebhookConfig::new().require_basic_auth([]),
+    );
+    let request = Request::post("/")
+        .body(Body::from(
+            r#"{
+                "notification_id": 1,
+                "organizer": "acmecorp",
+                "event": "democon",
+                "action": "pretix.event.changed"
+            }"#,
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn malformed_payload_returns_bad_request() {
     let app = webhook_router(RecordingHandler::default(), WebhookConfig::new());
     let request = Request::post("/")
@@ -376,6 +398,28 @@ async fn malformed_payload_returns_bad_request() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn default_body_limit_rejects_oversized_payloads() {
+    let app = webhook_router(RecordingHandler::default(), WebhookConfig::new());
+    let request = Request::post("/")
+        .body(Body::from(vec![b' '; 2 * 1024 * 1024 + 1]))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn unsupported_methods_return_method_not_allowed() {
+    let app = webhook_router(RecordingHandler::default(), WebhookConfig::new());
+    let request = Request::get("/").body(Body::empty()).unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 #[tokio::test]

@@ -11,5 +11,3 @@ devenv.local.yaml
 
 # Rust
 target/
-
-.env

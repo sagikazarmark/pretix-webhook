@@ -16,6 +16,12 @@ pub struct BasicAuthCredential {
 }
 
 impl BasicAuthCredential {
+    /// Creates a credential from the exact username and password bytes.
+    ///
+    /// HTTP Basic authentication uses the first colon as the username/password
+    /// separator, so usernames should not contain `:`. Passwords may contain
+    /// colons. Serve authenticated endpoints only through HTTPS or trusted TLS
+    /// termination because HTTP Basic credentials are not encrypted.
     #[must_use]
     pub fn new(username: impl AsRef<str>, password: impl AsRef<str>) -> Self {
         let mut hasher = Sha256::new();
@@ -85,6 +91,7 @@ impl Display for WebhookFilterError {
 impl std::error::Error for WebhookFilterError {}
 
 impl WebhookConfig {
+    /// Creates a configuration with no filters or authentication requirement.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -117,6 +124,8 @@ impl WebhookConfig {
     }
 
     /// Requires any one of the supplied credentials.
+    ///
+    /// Passing an empty iterator disables authentication.
     #[must_use]
     pub fn require_basic_auth(
         mut self,
@@ -173,6 +182,7 @@ fn validate_filter(kind: &str, value: String) -> Result<String, WebhookFilterErr
             message: format!("invalid {kind} slug: it must not be empty"),
         });
     }
+
     if value.trim() != value {
         return Err(WebhookFilterError {
             message: format!(
@@ -180,5 +190,6 @@ fn validate_filter(kind: &str, value: String) -> Result<String, WebhookFilterErr
             ),
         });
     }
+
     Ok(value)
 }

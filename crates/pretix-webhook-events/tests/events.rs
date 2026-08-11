@@ -114,3 +114,25 @@ fn preserves_unknown_plugin_events_for_forwarding() {
     assert_eq!(event.event_slug(), Some("demo"));
     assert_eq!(serde_json::to_value(event).unwrap(), input);
 }
+
+#[test]
+fn rejects_invalid_common_envelopes_and_malformed_known_payloads() {
+    for input in [
+        serde_json::json!({"notification_id": 1}),
+        serde_json::json!({"notification_id": 1, "action": 42}),
+        serde_json::json!({
+            "notification_id": -1,
+            "action": "pretix.plugin.badge.printed"
+        }),
+        serde_json::json!({"action": "pretix.plugin.badge.printed"}),
+        serde_json::json!({
+            "notification_id": 1,
+            "action": "pretix.event.order.placed"
+        }),
+    ] {
+        assert!(
+            serde_json::from_value::<WebhookEvent>(input.clone()).is_err(),
+            "invalid payload unexpectedly parsed: {input}"
+        );
+    }
+}

@@ -237,6 +237,26 @@ async fn rejected_requests_are_recorded_before_the_identity_is_known() {
 }
 
 #[tokio::test]
+async fn routing_and_extraction_rejections_emit_no_request_records() {
+    let records = capture(|| async {
+        let app = webhook_router_at("/hooks/pretix", NoopHandler, WebhookConfig::new()).unwrap();
+        let unsupported_method = Request::get("/hooks/pretix").body(Body::empty()).unwrap();
+        assert_eq!(
+            post(app.clone(), unsupported_method).await,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+
+        let oversized = Request::post("/hooks/pretix")
+            .body(Body::from(vec![b' '; 2 * 1024 * 1024 + 1]))
+            .unwrap();
+        assert_eq!(post(app, oversized).await, StatusCode::PAYLOAD_TOO_LARGE);
+    })
+    .await;
+
+    assert!(records.is_empty());
+}
+
+#[tokio::test]
 async fn filtered_events_are_recorded_at_debug() {
     let records = capture(|| async {
         let config = WebhookConfig::new().allow_organizer("othercorp").unwrap();

@@ -85,9 +85,11 @@ impl WebhookRouterBuilder {
         if !self.resolved_paths.insert(path.to_owned()) {
             return Err(WebhookPathError::duplicate(path));
         }
+
         self.router = self
             .router
             .merge(build_webhook_router(path, Some(path), handler, config));
+
         Ok(self)
     }
 }
@@ -113,6 +115,7 @@ impl MultiWebhookRouter {
     pub fn new(prefix: impl Into<String>) -> Result<Self, WebhookPathError> {
         let prefix = prefix.into();
         validate_webhook_prefix(&prefix)?;
+
         Ok(Self {
             prefix,
             builder: WebhookRouterBuilder::new(),
@@ -138,6 +141,7 @@ impl MultiWebhookRouter {
     {
         let path = resolve_webhook_path(&self.prefix, relative_path)?;
         let Self { prefix, builder } = self;
+
         Ok(Self {
             prefix,
             builder: builder.install(&path, handler, config)?,
@@ -177,6 +181,7 @@ where
     H: WebhookHandler,
 {
     validate_absolute_webhook_path(path)?;
+
     Ok(build_webhook_router(path, Some(path), handler, config))
 }
 
@@ -213,6 +218,7 @@ where
     let response = respond(state, headers, body);
     #[cfg(feature = "tracing")]
     let response = tracing::Instrument::instrument(response, span);
+
     response.await
 }
 

@@ -1,10 +1,12 @@
 [package]
 name = "pretix-webhook-cli"
-description = "Command-line pretix webhook receiver"
 version.workspace = true
+description = "Command-line pretix webhook receiver"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish = false
 
 [[bin]]
@@ -19,10 +21,10 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "signal", "sync"] }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 temp-env = { workspace = true }

@@ -52,54 +52,14 @@
 //! [`MultiWebhookRouter`] registers exact relative paths beneath one absolute
 //! prefix. Every registration has independent filters, credentials, and a
 //! concrete handler type. [`finish`](MultiWebhookRouter::finish) returns an
-//! ordinary Axum router that can be merged into a larger application:
+//! ordinary Axum router that can be merged into a larger application. See the
+//! [complete compile-checked example] for independent routes, credentials,
+//! filters, and handlers.
 //!
-//! ```
-//! use axum::{Router, routing::get};
-//! use pretix_webhook::{
-//!     BasicAuthCredential, MultiWebhookRouter, NoopHandler, WebhookConfig,
-//!     handler_fn,
-//! };
-//! use pretix_webhook_events::WebhookEvent;
+//! [complete compile-checked example]: https://docs.rs/crate/pretix-webhook/latest/source/examples/multiple_webhooks.rs
 //!
-//! fn application(
-//!     sales_password: &str,
-//!     operations_password: &str,
-//! ) -> Result<Router, Box<dyn std::error::Error>> {
-//!     let sales = WebhookConfig::new()
-//!         .allow_organizer("acmecorp")?
-//!         .allow_event("democon")?
-//!         .require_basic_auth([BasicAuthCredential::new(
-//!             "sales-webhook",
-//!             sales_password,
-//!         )]);
-//!     let operations = WebhookConfig::new()
-//!         .allow_organizer("acmecorp")?
-//!         .require_basic_auth([BasicAuthCredential::new(
-//!             "operations-webhook",
-//!             operations_password,
-//!         )]);
-//!
-//!     let webhooks = MultiWebhookRouter::new("/hooks")?
-//!         .register(
-//!             "sales/orders",
-//!             handler_fn(|event: WebhookEvent| async move {
-//!                 println!("sales event: {}", event.action());
-//!                 Ok::<_, std::convert::Infallible>(())
-//!             }),
-//!             sales,
-//!         )?
-//!         .register("operations/checkins", NoopHandler, operations)?
-//!         .finish();
-//!
-//!     Ok(Router::new()
-//!         .route("/health", get(|| async { "ok" }))
-//!         .merge(webhooks))
-//! }
-//! # let _ = application;
-//! ```
-//!
-//! The example exposes `/hooks/sales/orders` and `/hooks/operations/checkins`.
+//! The example configures `/hooks/sales/orders` and
+//! `/hooks/operations/checkins`.
 //! A request is dispatched only to the handler at its exact path; filters do
 //! not fan out requests between registrations.
 //!
@@ -111,18 +71,33 @@
 //!
 //! The endpoint returns `204` on success, `400` for malformed payloads, `401`
 //! for failed authentication, `404` for unsupported organizers/events, and
-//! `500` when the handler fails so pretix retries delivery.
+//! `500` when the handler fails so pretix retries delivery. Axum returns `405`
+//! for unsupported methods and applies its default 2 MiB body limit before the
+//! handler, returning `413` for an oversized request. Applications can replace
+//! that limit with Axum's `DefaultBodyLimit` layer.
 //!
 //! The crate's normal dependency graph does not include Tokio; choose a runtime
 //! when serving or testing the completed Axum router.
 //!
+//! # Feature flags
+//!
+//! The default feature set is empty. Enable `tracing` to instrument requests
+//! that reach the endpoint handler and emit the records described below:
+//!
+//! ```toml
+//! [dependencies]
+//! pretix-webhook = { version = "0.1", features = ["tracing"] }
+//! ```
+//!
 //! # Observability
 //!
 //! The optional `tracing` feature instruments the endpoint itself, so enabling
-//! it is all that is required — there is no handler to install and nothing to
-//! call. Every request opens a `pretix_webhook` span, which means a handler's
-//! own output carries the route and the event's identity without the handler
-//! knowing about either:
+//! it is all that is required; there is no handler to install and nothing to
+//! call. Each POST request that reaches the webhook handler after routing and
+//! body extraction opens a `pretix_webhook` span, which means a handler's own
+//! output carries the route and the event's identity without the handler
+//! knowing about either. Routing and extraction rejections such as `405` and
+//! `413` occur before this span is created:
 //!
 //! ```
 //! use pretix_webhook::{WebhookConfig, handler_fn, webhook_router_at};
