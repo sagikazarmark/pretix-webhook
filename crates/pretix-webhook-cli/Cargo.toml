@@ -13,24 +13,17 @@ name = "pretix-webhook"
 path = "src/main.rs"
 doc = false
 
-[features]
-default = ["log"]
-log = ["dep:env_logger", "dep:log", "pretix-webhook/log"]
-tracing = ["dep:tracing", "dep:tracing-subscriber", "pretix-webhook/tracing"]
-
 [dependencies]
-pretix-webhook = { workspace = true }
+pretix-webhook = { workspace = true, features = ["tracing"] }
 
 axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true }
-env_logger = { workspace = true, optional = true }
-log = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
-tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 temp-env = { workspace = true }

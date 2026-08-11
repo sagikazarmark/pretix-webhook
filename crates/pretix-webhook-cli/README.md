@@ -100,11 +100,12 @@ authentication is disabled. HTTP Basic credentials are only encoded, not
 encrypted: terminate TLS in front of the receiver and keep credential values
 out of TOML, command-line arguments, logs, and source control.
 
-## Observability features
+## Observability
 
-The default `log` feature emits accepted events through the `log` facade. Use
-`--no-default-features --features tracing` for structured tracing. With no
-features, the server uses a no-op event handler while retaining startup
-diagnostics. If both `log` and `tracing` are enabled, tracing takes precedence.
+Every request is recorded through `tracing`, along with startup diagnostics.
+`RUST_LOG` selects what is emitted, defaulting to
+`pretix_webhook=info,pretix_webhook_cli=info`. Records for accepted events
+carry the route and the event's identity; see the `pretix-webhook` crate for
+the full field and message set.
 
 [pretix webhooks]: https://docs.pretix.eu/dev/api/webhooks.html

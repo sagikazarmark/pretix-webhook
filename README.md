@@ -17,6 +17,8 @@
   authentication (with credential rotation)
 - **Multi-webhook builder** for registering several handlers beneath a shared
   prefix
+- **Built-in `tracing` instrumentation** — handlers inherit the route and the
+  event's identity without wiring anything up
 - **Ready-to-run CLI server** with flag, environment variable, and TOML
   configuration
 
@@ -126,8 +128,10 @@ Returning an error produces a `500` response, so pretix retries the delivery;
 returning `Ok(())` acknowledges it with `204`. Pretix documents that
 notifications can be duplicated, so handlers should be idempotent.
 
-`NoopHandler` is always available, and the optional `log` and `tracing`
-features provide `LogHandler` and `TracingHandler`.
+`NoopHandler` is always available for a receiver that only observes. The
+optional `tracing` feature instruments the endpoint itself rather than
+providing a handler: every request opens a span carrying the route and the
+event's identity, which a handler's own records inherit.
 
 ## Multiple webhooks
 

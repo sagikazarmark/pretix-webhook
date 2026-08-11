@@ -112,9 +112,51 @@ The endpoint returns `204` on success, `400` for malformed payloads, `401` for
 failed authentication, `404` for unsupported organizers/events, and `500` when
 the handler fails so pretix retries delivery.
 
-Optional `log` and `tracing` features provide `LogHandler` and
-`TracingHandler`. `NoopHandler` and `handler_fn` are always available. The
-crate's normal dependency graph does not include Tokio; choose a runtime when
-serving or testing the completed Axum router.
+The crate's normal dependency graph does not include Tokio; choose a runtime
+when serving or testing the completed Axum router.
+
+## Observability
+
+The optional `tracing` feature instruments the endpoint itself, so enabling it
+is all that is required — there is no handler to install and nothing to call.
+Every request opens a `pretix_webhook` span, which means a handler's own output
+carries the route and the event's identity without the handler knowing about
+either:
+
+```rust
+use pretix_webhook::{WebhookConfig, handler_fn, webhook_router_at};
+use pretix_webhook_events::WebhookEvent;
+
+let handler = handler_fn(|event: WebhookEvent| async move {
+    // Carries route, notification_id, action, organizer, pretix_event, and
+    // kind from the enclosing span.
+    tracing::info!("dispatching to fulfilment");
+    Ok::<_, std::convert::Infallible>(())
+});
+
+let router = webhook_router_at("/webhook", handler, WebhookConfig::new())?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The span carries `route` plus the event's `notification_id`, `action`,
+`organizer`, `pretix_event`, and `kind`. `route` is recorded only for routers
+built at an exact path; `webhook_router` is meant to be nested, so the path it
+is finally served at is not known here. The identity fields are recorded once
+the payload parses, so they are absent from records emitted before that point.
+
+Within the span the endpoint emits:
+
+| Level | Message                                           | When                          |
+| ----- | ------------------------------------------------- | ----------------------------- |
+| INFO  | `received pretix webhook`                         | accepted, before dispatch     |
+| ERROR | `pretix webhook handler failed`                   | the handler returned an error |
+| WARN  | `rejected unauthenticated pretix webhook request` | authentication failed         |
+| WARN  | `rejected malformed pretix webhook payload`       | the body did not parse        |
+| DEBUG | `rejected filtered pretix webhook event`          | filters excluded the event    |
+
+Records are emitted whenever the feature is compiled in; silence them per
+deployment through the subscriber's filter rather than at compile time, for
+example `RUST_LOG=pretix_webhook=off`. Use `NoopHandler` for a receiver that
+only observes.
 
 [pretix webhooks]: https://docs.pretix.eu/dev/api/webhooks.html

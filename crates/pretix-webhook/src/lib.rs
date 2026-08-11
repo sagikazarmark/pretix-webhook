@@ -6,10 +6,6 @@ mod path;
 mod router;
 
 pub use config::{BasicAuthCredential, WebhookConfig, WebhookFilterError};
-#[cfg(feature = "log")]
-pub use handler::LogHandler;
-#[cfg(feature = "tracing")]
-pub use handler::TracingHandler;
 pub use handler::{FnHandler, NoopHandler, WebhookHandler, handler_fn};
 pub use path::{
     WebhookPathError, resolve_webhook_path, validate_absolute_webhook_path,
