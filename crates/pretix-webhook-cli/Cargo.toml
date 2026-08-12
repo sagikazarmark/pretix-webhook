@@ -16,6 +16,7 @@ doc = false
 
 [dependencies]
 pretix-webhook = { workspace = true, features = ["tracing"] }
+pretix-webhook-events = { workspace = true }
 
 axum = { workspace = true, features = ["http1", "tokio"] }
 clap = { workspace = true }

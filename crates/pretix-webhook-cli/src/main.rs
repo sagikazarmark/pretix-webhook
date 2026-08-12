@@ -1,8 +1,9 @@
-use std::{error::Error, process::ExitCode};
+use std::{convert::Infallible, error::Error, process::ExitCode};
 
+use axum::{Router, routing::post_service};
 use clap::Parser;
-use pretix_webhook::{NoopHandler, WebhookRouterBuilder};
 use pretix_webhook_cli::Config;
+use pretix_webhook_events::WebhookEvent;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -22,9 +23,7 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn Error>> {
     let config = Config::parse().into_effective()?;
     let (bind, endpoints) = config.into_parts();
-    // Registering through the builder keeps a route collision an error; merging
-    // Axum routers directly would panic instead.
-    let mut builder = WebhookRouterBuilder::new();
+    let mut app = Router::new();
     let mut diagnostics = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
         diagnostics.push(StartupRoute {
@@ -32,12 +31,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             unrestricted: endpoint.is_unrestricted(),
             unauthenticated: endpoint.is_unauthenticated(),
         });
-        let (path, webhook_config) = endpoint.into_parts();
-        // The router records every accepted event through `tracing`, so a
-        // receiver that only observes needs no handler of its own.
-        builder = builder.register_at(&path, NoopHandler, webhook_config)?;
+        let (path, webhook_builder) = endpoint.into_parts();
+        let service =
+            webhook_builder.build(|_event: WebhookEvent| async { Ok::<(), Infallible>(()) });
+        app = app.route(&path, post_service(service));
     }
-    let app = builder.finish();
     let listener = tokio::net::TcpListener::bind(bind).await?;
 
     report_startup(listener.local_addr()?, &diagnostics);

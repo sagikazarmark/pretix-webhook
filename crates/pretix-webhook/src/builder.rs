@@ -3,11 +3,13 @@ use std::{
     fmt::{Debug, Display, Formatter},
 };
 
-use axum::http::{HeaderMap, header};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use http::{HeaderMap, header};
 use pretix_webhook_events::WebhookEvent;
 use sha2::{Digest, Sha256};
 use subtle::{Choice, ConstantTimeEq};
+
+use crate::service::{DEFAULT_BODY_LIMIT, WebhookService};
 
 /// A username/password pair accepted by HTTP Basic authentication.
 #[derive(Clone)]
@@ -40,12 +42,13 @@ impl Debug for BasicAuthCredential {
     }
 }
 
-/// Authentication and organizer/event policy for a webhook endpoint.
-#[derive(Clone, Default)]
-pub struct WebhookConfig {
+/// Configures a [`WebhookService`].
+#[derive(Clone)]
+pub struct WebhookServiceBuilder {
     organizers: BTreeSet<String>,
     events: BTreeSet<String>,
     credentials: Vec<BasicAuthCredential>,
+    body_limit: usize,
 }
 
 /// Reports how much policy is configured without disclosing any of it.
@@ -54,13 +57,14 @@ pub struct WebhookConfig {
 /// same reason [`BasicAuthCredential`] and [`WebhookFilterError`] are: a
 /// derived `Debug` would place them in any diagnostic that renders a
 /// configuration.
-impl Debug for WebhookConfig {
+impl Debug for WebhookServiceBuilder {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("WebhookConfig")
+            .debug_struct("WebhookServiceBuilder")
             .field("organizers", &Redacted(self.organizers.len()))
             .field("events", &Redacted(self.events.len()))
             .field("credentials", &Redacted(self.credentials.len()))
+            .field("body_limit", &self.body_limit)
             .finish()
     }
 }
@@ -90,8 +94,8 @@ impl Display for WebhookFilterError {
 
 impl std::error::Error for WebhookFilterError {}
 
-impl WebhookConfig {
-    /// Creates a configuration with no filters or authentication requirement.
+impl WebhookServiceBuilder {
+    /// Creates a builder with no filters or authentication requirement.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -135,6 +139,21 @@ impl WebhookConfig {
         self
     }
 
+    /// Sets the maximum request body size in bytes.
+    ///
+    /// The default is [`DEFAULT_BODY_LIMIT`]. A request that exceeds the limit
+    /// receives `413 Payload Too Large` without reaching the handler.
+    #[must_use]
+    pub fn body_limit(mut self, body_limit: usize) -> Self {
+        self.body_limit = body_limit;
+        self
+    }
+
+    /// Builds an HTTP webhook service around an event handler.
+    pub fn build<H>(self, handler: H) -> WebhookService<H> {
+        WebhookService::new(handler, self)
+    }
+
     pub(super) fn allows(&self, event: &WebhookEvent) -> bool {
         (self.organizers.is_empty()
             || event
@@ -173,6 +192,21 @@ impl WebhookConfig {
                     matched | credential.digest.ct_eq(&digest)
                 }),
         )
+    }
+
+    pub(super) fn body_limit_bytes(&self) -> usize {
+        self.body_limit
+    }
+}
+
+impl Default for WebhookServiceBuilder {
+    fn default() -> Self {
+        Self {
+            organizers: BTreeSet::new(),
+            events: BTreeSet::new(),
+            credentials: Vec::new(),
+            body_limit: DEFAULT_BODY_LIMIT,
+        }
     }
 }
 

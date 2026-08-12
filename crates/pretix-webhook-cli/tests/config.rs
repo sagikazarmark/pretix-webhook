@@ -1,18 +1,27 @@
 use std::{
+    convert::Infallible,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Mutex, MutexGuard},
 };
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
+    routing::post_service,
 };
 use clap::Parser;
-use pretix_webhook::{NoopHandler, webhook_router, webhook_router_at};
+use pretix_webhook::WebhookServiceBuilder;
 use pretix_webhook_cli::Config;
+use pretix_webhook_events::WebhookEvent;
 use tower::ServiceExt;
 
 static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+
+fn mount_webhook(app: Router, path: &str, builder: WebhookServiceBuilder) -> Router {
+    let service = builder.build(|_event: WebhookEvent| async { Ok::<(), Infallible>(()) });
+    app.route(path, post_service(service))
+}
 
 #[tokio::test]
 async fn toml_routes_resolve_independent_rotatable_credentials() {
@@ -52,8 +61,8 @@ async fn toml_routes_resolve_independent_rotatable_credentials() {
 
     let mut app = axum::Router::new();
     for endpoint in config.into_parts().1 {
-        let (path, webhook_config) = endpoint.into_parts();
-        app = app.merge(webhook_router_at(&path, NoopHandler, webhook_config).unwrap());
+        let (path, webhook_builder) = endpoint.into_parts();
+        app = mount_webhook(app, &path, webhook_builder);
     }
 
     for authorization in ["Basic b2xkOnNlY3JldA==", "Basic Y3VycmVudDpuZXc6c2VjcmV0"] {
@@ -192,8 +201,8 @@ async fn explicit_toml_config_builds_independently_filtered_public_routes() {
     assert_eq!(bind, "127.0.0.1:3000".parse().unwrap());
     let mut app = axum::Router::new();
     for endpoint in endpoints {
-        let (path, webhook_config) = endpoint.into_parts();
-        app = app.merge(webhook_router_at(&path, NoopHandler, webhook_config).unwrap());
+        let (path, webhook_builder) = endpoint.into_parts();
+        app = mount_webhook(app, &path, webhook_builder);
     }
 
     let accepted = Request::post("/incoming/sales/orders")
@@ -605,8 +614,8 @@ async fn reads_server_policy_and_credentials_from_environment() {
 
     let (_, mut endpoints) = config.into_parts();
     let endpoint = endpoints.pop().unwrap();
-    let (_, webhook_config) = endpoint.into_parts();
-    let app = webhook_router(NoopHandler, webhook_config);
+    let (_, webhook_builder) = endpoint.into_parts();
+    let app = mount_webhook(Router::new(), "/", webhook_builder);
     let payload = r#"{
         "notification_id": 1,
         "organizer": "acmecorp",
@@ -643,8 +652,8 @@ async fn filters_are_optional_and_default_to_unrestricted() {
 
     let (_, mut endpoints) = config.into_parts();
     let endpoint = endpoints.pop().unwrap();
-    let (_, webhook_config) = endpoint.into_parts();
-    let app = webhook_router(NoopHandler, webhook_config);
+    let (_, webhook_builder) = endpoint.into_parts();
+    let app = mount_webhook(Router::new(), "/", webhook_builder);
     let request = Request::post("/")
         .body(Body::from(
             r#"{
@@ -704,8 +713,8 @@ async fn organizer_event_and_credential_flags_are_independently_repeatable() {
 
     let (_, mut endpoints) = config.into_parts();
     let endpoint = endpoints.pop().unwrap();
-    let (_, webhook_config) = endpoint.into_parts();
-    let app = webhook_router(NoopHandler, webhook_config);
+    let (_, webhook_builder) = endpoint.into_parts();
+    let app = mount_webhook(Router::new(), "/", webhook_builder);
     let payload = r#"{
         "notification_id": 1,
         "organizer": "other",
@@ -893,7 +902,7 @@ fn empty_and_malformed_credentials_are_rejected() {
 }
 
 #[test]
-fn command_line_paths_use_the_library_static_path_grammar() {
+fn command_line_paths_use_the_cli_static_path_grammar() {
     let _environment = lock_environment();
     for path in ["/", "/hooks/AZaz09-._~"] {
         let config = Config::try_parse_from(["pretix-webhook", "--path", path]).unwrap();
@@ -924,8 +933,8 @@ async fn assert_organizer_statuses(
     expectations: &[(&str, StatusCode)],
 ) {
     let (_, mut endpoints) = config.into_parts();
-    let (_, webhook_config) = endpoints.pop().unwrap().into_parts();
-    let app = webhook_router(NoopHandler, webhook_config);
+    let (_, webhook_builder) = endpoints.pop().unwrap().into_parts();
+    let app = mount_webhook(Router::new(), "/", webhook_builder);
 
     for (organizer, expected) in expectations {
         let request = Request::post("/")

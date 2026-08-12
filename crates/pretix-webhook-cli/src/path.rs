@@ -1,8 +1,7 @@
 use std::fmt::{Display, Formatter};
 
-/// An invalid webhook URL path.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebhookPathError {
+pub(crate) struct WebhookPathError {
     message: String,
 }
 
@@ -11,10 +10,6 @@ impl WebhookPathError {
         Self {
             message: message.into(),
         }
-    }
-
-    pub(crate) fn duplicate(path: &str) -> Self {
-        Self::new(format!("duplicate webhook path {path:?}"))
     }
 }
 
@@ -26,13 +21,7 @@ impl Display for WebhookPathError {
 
 impl std::error::Error for WebhookPathError {}
 
-/// Validates an absolute, exact webhook path.
-///
-/// # Errors
-///
-/// Returns [`WebhookPathError`] when `path` is not `/` or an absolute path
-/// made of static URL-unreserved ASCII segments.
-pub fn validate_absolute_webhook_path(path: &str) -> Result<(), WebhookPathError> {
+pub(crate) fn validate_absolute_webhook_path(path: &str) -> Result<(), WebhookPathError> {
     validate_absolute(path, "absolute webhook path")
 }
 
@@ -54,23 +43,11 @@ fn validate_absolute(path: &str, subject: &str) -> Result<(), WebhookPathError> 
     validate_segments(&path[1..], subject, path)
 }
 
-/// Validates a global webhook prefix.
-///
-/// # Errors
-///
-/// Returns [`WebhookPathError`] when `prefix` is not `/` or an absolute path
-/// made of static URL-unreserved ASCII segments.
-pub fn validate_webhook_prefix(prefix: &str) -> Result<(), WebhookPathError> {
+pub(crate) fn validate_webhook_prefix(prefix: &str) -> Result<(), WebhookPathError> {
     validate_absolute(prefix, "webhook prefix")
 }
 
-/// Validates a relative webhook registration path.
-///
-/// # Errors
-///
-/// Returns [`WebhookPathError`] when `path` is empty, has a leading or trailing
-/// slash, or contains anything other than static URL-unreserved ASCII segments.
-pub fn validate_relative_webhook_path(path: &str) -> Result<(), WebhookPathError> {
+pub(crate) fn validate_relative_webhook_path(path: &str) -> Result<(), WebhookPathError> {
     let subject = "relative webhook path";
     if path.is_empty() {
         return Err(WebhookPathError::new(format!(
@@ -127,13 +104,10 @@ fn is_url_unreserved_ascii(character: char) -> bool {
     character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_' | '~')
 }
 
-/// Validates and joins a global prefix and relative registration path.
-///
-/// # Errors
-///
-/// Returns [`WebhookPathError`] when either argument does not follow its path
-/// grammar.
-pub fn resolve_webhook_path(prefix: &str, relative_path: &str) -> Result<String, WebhookPathError> {
+pub(crate) fn resolve_webhook_path(
+    prefix: &str,
+    relative_path: &str,
+) -> Result<String, WebhookPathError> {
     validate_webhook_prefix(prefix)?;
     validate_relative_webhook_path(relative_path)?;
 
@@ -141,5 +115,84 @@ pub fn resolve_webhook_path(prefix: &str, relative_path: &str) -> Result<String,
         Ok(format!("/{relative_path}"))
     } else {
         Ok(format!("{prefix}/{relative_path}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_static_paths_are_accepted_and_resolved_canonically() {
+        for path in ["/", "/hooks", "/hooks/AZaz09-._~"] {
+            validate_absolute_webhook_path(path).unwrap();
+            validate_webhook_prefix(path).unwrap();
+        }
+
+        for path in ["pretix", "integrations/pretix/AZaz09-._~"] {
+            validate_relative_webhook_path(path).unwrap();
+        }
+
+        assert_eq!(
+            resolve_webhook_path("/hooks", "integrations/pretix").unwrap(),
+            "/hooks/integrations/pretix"
+        );
+        assert_eq!(
+            resolve_webhook_path("/", "integrations/pretix").unwrap(),
+            "/integrations/pretix"
+        );
+    }
+
+    #[test]
+    fn invalid_absolute_paths_report_the_rejected_form() {
+        for path in [
+            "hooks",
+            "/hooks/",
+            "/hooks//pretix",
+            "/hooks/./pretix",
+            "/hooks/../pretix",
+            "/hooks/{id}",
+            "/hooks/:id",
+            "/hooks/*rest",
+            "/hooks?enabled=true",
+            "/hooks#pretix",
+            "/hooks%2Fpretix",
+            "/hooks pretix",
+            "/hooks/é",
+        ] {
+            let error = validate_absolute_webhook_path(path).unwrap_err();
+            assert!(
+                error.to_string().contains(path),
+                "error did not identify {path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_relative_paths_and_prefixes_are_rejected_before_resolution() {
+        for path in [
+            "",
+            "/hooks",
+            "hooks/",
+            "hooks//pretix",
+            "hooks/./pretix",
+            "hooks/../pretix",
+            "hooks/{organizer}",
+            "hooks?enabled=true",
+            "hooks%2Fpretix",
+            "hooks pretix",
+        ] {
+            let error = validate_relative_webhook_path(path).unwrap_err();
+            assert!(
+                error.to_string().contains(path),
+                "error did not identify {path:?}: {error}"
+            );
+        }
+
+        let prefix_error = resolve_webhook_path("/hooks/", "pretix").unwrap_err();
+        assert!(prefix_error.to_string().contains("webhook prefix"));
+
+        let relative_error = resolve_webhook_path("/hooks", "/pretix").unwrap_err();
+        assert!(relative_error.to_string().contains("relative webhook path"));
     }
 }

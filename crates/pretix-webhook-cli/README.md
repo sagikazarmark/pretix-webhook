@@ -103,13 +103,13 @@ out of TOML, command-line arguments, logs, and source control.
 
 ## Observability
 
-Each POST request that reaches a configured webhook handler after routing and
-body extraction is recorded through `tracing`, along with startup diagnostics.
-Routing and extraction rejections such as unsupported methods or oversized
-bodies occur before the request span is created. `RUST_LOG` selects what is
-emitted, defaulting to `pretix_webhook=info,pretix_webhook_cli=info`. Records
-for accepted events carry the route and the event's identity; see the
-`pretix-webhook` crate for the full field and message set.
+Each POST request that reaches a configured webhook service is recorded through
+`tracing`, along with startup diagnostics. Routing rejections such as
+unsupported methods and service-level body-limit rejections occur before the
+request span is created. `RUST_LOG` selects what is emitted, defaulting to
+`pretix_webhook=info,pretix_webhook_cli=info`. Records for accepted events carry
+the request path and the event's identity; see the `pretix-webhook` crate for
+the full field and message set.
 
 ## License
 

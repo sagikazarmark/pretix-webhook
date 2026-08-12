@@ -1,6 +1,11 @@
 # Multiple Independently Configured Webhooks
 
-Status: ready-for-agent
+> Historical specification: this multi-route design was implemented and later
+> superseded by caller-owned routing. The receiver now exposes an
+> Axum-independent Tower `WebhookService`; the CLI owns its Axum routes and
+> route validation.
+
+Status: superseded
 
 ## Problem Statement
 

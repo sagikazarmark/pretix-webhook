@@ -6,7 +6,7 @@
 **Typed payloads sent by [pretix webhooks](https://docs.pretix.eu/dev/api/webhooks.html), with no HTTP dependency.**
 
 Use this crate directly to parse, inspect, or forward payloads;
-`pretix-webhook` builds an Axum receiver on top of it.
+`pretix-webhook` builds a framework-independent Tower receiver on top of it.
 
 Pretix only guarantees `notification_id` and `action` across all core payloads.
 `WebhookEvent` dispatches known core actions to their actual payload shapes and

@@ -521,6 +521,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
  "pretix-webhook-events",
  "serde_json",
  "sha2",
@@ -538,6 +542,7 @@ dependencies = [
  "axum",
  "clap",
  "pretix-webhook",
+ "pretix-webhook-events",
  "serde",
  "temp-env",
  "thiserror",

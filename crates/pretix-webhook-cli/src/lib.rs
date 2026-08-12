@@ -12,5 +12,6 @@
 //! variables, and the TOML file.
 
 mod config;
+mod path;
 
 pub use config::{Config, ConfigError, EffectiveConfig, EffectiveEndpoint};

@@ -1,21 +1,19 @@
 #![cfg(feature = "tracing")]
 
 use std::{
+    convert::Infallible,
     future::Future,
     io::Write,
     sync::{Arc, Mutex},
 };
 
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, StatusCode},
-};
-use pretix_webhook::{
-    BasicAuthCredential, NoopHandler, WebhookConfig, handler_fn, webhook_router, webhook_router_at,
-};
+use bytes::Bytes;
+use http::{Request, StatusCode};
+use http_body_util::Full;
+use pretix_webhook::{BasicAuthCredential, WebhookHandler, WebhookResponse, WebhookServiceBuilder};
+use pretix_webhook_events::WebhookEvent;
 use serde_json::{Value, json};
-use tower::ServiceExt;
+use tower::{Service, ServiceExt};
 use tracing::Level;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -67,9 +65,15 @@ where
         .collect()
 }
 
+type Body = Full<Bytes>;
+
+fn body(value: impl Into<Bytes>) -> Body {
+    Full::new(value.into())
+}
+
 fn webhook_request(path: &str) -> Request<Body> {
     Request::post(path)
-        .body(Body::from(
+        .body(body(
             r#"{
                 "notification_id": 42,
                 "organizer": "acmecorp",
@@ -80,8 +84,22 @@ fn webhook_request(path: &str) -> Request<Body> {
         .unwrap()
 }
 
-async fn post(app: Router, request: Request<Body>) -> StatusCode {
-    app.oneshot(request).await.unwrap().status()
+async fn post<S>(service: S, request: Request<Body>) -> StatusCode
+where
+    S: Service<Request<Body>, Response = WebhookResponse, Error = std::convert::Infallible>,
+{
+    service.oneshot(request).await.unwrap().status()
+}
+
+#[derive(Clone, Copy)]
+struct NoopHandler;
+
+impl WebhookHandler for NoopHandler {
+    type Error = Infallible;
+
+    async fn handle(&self, _event: WebhookEvent) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 fn identified_span() -> Value {
@@ -99,7 +117,7 @@ fn identified_span() -> Value {
 #[tokio::test]
 async fn accepted_events_are_recorded_on_the_request_span() {
     let records = capture(|| async {
-        let app = webhook_router_at("/hooks/pretix", NoopHandler, WebhookConfig::new()).unwrap();
+        let app = WebhookServiceBuilder::new().build(NoopHandler);
         assert_eq!(
             post(app, webhook_request("/hooks/pretix")).await,
             StatusCode::NO_CONTENT
@@ -119,11 +137,11 @@ async fn accepted_events_are_recorded_on_the_request_span() {
 #[tokio::test]
 async fn handler_output_inherits_the_request_span() {
     let records = capture(|| async {
-        let handler = handler_fn(|_event| async {
+        let handler = |_event| async {
             tracing::info!("dispatched to fulfilment");
             Ok::<_, std::convert::Infallible>(())
-        });
-        let app = webhook_router_at("/hooks/pretix", handler, WebhookConfig::new()).unwrap();
+        };
+        let app = WebhookServiceBuilder::new().build(handler);
         assert_eq!(
             post(app, webhook_request("/hooks/pretix")).await,
             StatusCode::NO_CONTENT
@@ -142,35 +160,10 @@ async fn handler_output_inherits_the_request_span() {
 }
 
 #[tokio::test]
-async fn a_nested_router_records_no_route() {
-    let records = capture(|| async {
-        let app = webhook_router(NoopHandler, WebhookConfig::new());
-        assert_eq!(
-            post(app, webhook_request("/")).await,
-            StatusCode::NO_CONTENT
-        );
-    })
-    .await;
-
-    assert_eq!(records.len(), 1);
-    assert_eq!(
-        records[0]["span"],
-        json!({
-            "name": "pretix_webhook",
-            "notification_id": 42,
-            "action": "pretix.event.changed",
-            "organizer": "acmecorp",
-            "pretix_event": "democon",
-            "kind": "Event",
-        })
-    );
-}
-
-#[tokio::test]
 async fn handler_failures_are_recorded_with_the_event_identity() {
     let records = capture(|| async {
-        let handler = handler_fn(|_event| async { Err::<(), _>("downstream unavailable") });
-        let app = webhook_router_at("/hooks/pretix", handler, WebhookConfig::new()).unwrap();
+        let handler = |_event| async { Err::<(), _>("downstream unavailable") };
+        let app = WebhookServiceBuilder::new().build(handler);
         assert_eq!(
             post(app, webhook_request("/hooks/pretix")).await,
             StatusCode::INTERNAL_SERVER_ERROR
@@ -193,9 +186,9 @@ async fn handler_failures_are_recorded_with_the_event_identity() {
 #[tokio::test]
 async fn rejected_requests_are_recorded_before_the_identity_is_known() {
     let unauthenticated = capture(|| async {
-        let config = WebhookConfig::new()
+        let config = WebhookServiceBuilder::new()
             .require_basic_auth([BasicAuthCredential::new("webhook", "secret")]);
-        let app = webhook_router_at("/hooks/pretix", NoopHandler, config).unwrap();
+        let app = config.build(NoopHandler);
         assert_eq!(
             post(app, webhook_request("/hooks/pretix")).await,
             StatusCode::UNAUTHORIZED
@@ -215,10 +208,8 @@ async fn rejected_requests_are_recorded_before_the_identity_is_known() {
     );
 
     let malformed = capture(|| async {
-        let app = webhook_router_at("/hooks/pretix", NoopHandler, WebhookConfig::new()).unwrap();
-        let request = Request::post("/hooks/pretix")
-            .body(Body::from("{}"))
-            .unwrap();
+        let app = WebhookServiceBuilder::new().build(NoopHandler);
+        let request = Request::post("/hooks/pretix").body(body("{}")).unwrap();
         assert_eq!(post(app, request).await, StatusCode::BAD_REQUEST);
     })
     .await;
@@ -237,17 +228,11 @@ async fn rejected_requests_are_recorded_before_the_identity_is_known() {
 }
 
 #[tokio::test]
-async fn routing_and_extraction_rejections_emit_no_request_records() {
+async fn body_limit_rejections_emit_no_request_records() {
     let records = capture(|| async {
-        let app = webhook_router_at("/hooks/pretix", NoopHandler, WebhookConfig::new()).unwrap();
-        let unsupported_method = Request::get("/hooks/pretix").body(Body::empty()).unwrap();
-        assert_eq!(
-            post(app.clone(), unsupported_method).await,
-            StatusCode::METHOD_NOT_ALLOWED
-        );
-
+        let app = WebhookServiceBuilder::new().build(NoopHandler);
         let oversized = Request::post("/hooks/pretix")
-            .body(Body::from(vec![b' '; 2 * 1024 * 1024 + 1]))
+            .body(body(vec![b' '; 2 * 1024 * 1024 + 1]))
             .unwrap();
         assert_eq!(post(app, oversized).await, StatusCode::PAYLOAD_TOO_LARGE);
     })
@@ -259,8 +244,10 @@ async fn routing_and_extraction_rejections_emit_no_request_records() {
 #[tokio::test]
 async fn filtered_events_are_recorded_at_debug() {
     let records = capture(|| async {
-        let config = WebhookConfig::new().allow_organizer("othercorp").unwrap();
-        let app = webhook_router_at("/hooks/pretix", NoopHandler, config).unwrap();
+        let config = WebhookServiceBuilder::new()
+            .allow_organizer("othercorp")
+            .unwrap();
+        let app = config.build(NoopHandler);
         assert_eq!(
             post(app, webhook_request("/hooks/pretix")).await,
             StatusCode::NOT_FOUND

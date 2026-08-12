@@ -7,12 +7,14 @@ use std::{
 };
 
 use clap::Parser;
-use pretix_webhook::{
-    BasicAuthCredential, WebhookConfig, resolve_webhook_path, validate_absolute_webhook_path,
-    validate_relative_webhook_path, validate_webhook_prefix,
-};
+use pretix_webhook::{BasicAuthCredential, WebhookServiceBuilder};
 use serde::Deserialize;
 use thiserror::Error;
+
+use crate::path::{
+    resolve_webhook_path, validate_absolute_webhook_path, validate_relative_webhook_path,
+    validate_webhook_prefix,
+};
 
 #[derive(Clone)]
 struct Credential(BasicAuthCredential);
@@ -176,19 +178,19 @@ impl Config {
 
         let unrestricted = self.allowed_organizers.is_empty() && self.allowed_events.is_empty();
         let unauthenticated = self.credentials.is_empty();
-        let mut webhook_config = WebhookConfig::new();
+        let mut webhook_builder = WebhookServiceBuilder::new();
         for organizer in self.allowed_organizers {
-            webhook_config = webhook_config
+            webhook_builder = webhook_builder
                 .allow_organizer(organizer)
                 .map_err(|error| ConfigError::InvalidSimple(error.to_string()))?;
         }
         for event in self.allowed_events {
-            webhook_config = webhook_config
+            webhook_builder = webhook_builder
                 .allow_event(event)
                 .map_err(|error| ConfigError::InvalidSimple(error.to_string()))?;
         }
         if !unauthenticated {
-            webhook_config = webhook_config
+            webhook_builder = webhook_builder
                 .require_basic_auth(self.credentials.into_iter().map(|credential| credential.0));
         }
 
@@ -196,7 +198,7 @@ impl Config {
             bind: self.bind,
             endpoints: vec![EffectiveEndpoint {
                 path: self.path.unwrap_or_else(|| "/webhook".to_owned()),
-                webhook_config,
+                webhook_builder,
                 unrestricted,
                 unauthenticated,
             }],
@@ -266,12 +268,13 @@ impl Config {
 
             let route = route_context(route_number, path.as_deref());
             for organizer in &webhook.allow_organizers {
-                if let Err(error) = WebhookConfig::new().allow_organizer(organizer.as_str()) {
+                if let Err(error) = WebhookServiceBuilder::new().allow_organizer(organizer.as_str())
+                {
                     errors.push(format!("{route}: {error}"));
                 }
             }
             for event in &webhook.allow_events {
-                if let Err(error) = WebhookConfig::new().allow_event(event.as_str()) {
+                if let Err(error) = WebhookServiceBuilder::new().allow_event(event.as_str()) {
                     errors.push(format!("{route}: {error}"));
                 }
             }
@@ -486,24 +489,24 @@ fn build_effective_endpoints(webhooks: Vec<ValidatedWebhook>) -> Vec<EffectiveEn
             let unrestricted =
                 webhook.allow_organizers.is_empty() && webhook.allow_events.is_empty();
             let unauthenticated = webhook.credential_env.is_empty();
-            let mut webhook_config = WebhookConfig::new();
+            let mut webhook_builder = WebhookServiceBuilder::new();
             for organizer in webhook.allow_organizers {
-                webhook_config = webhook_config
+                webhook_builder = webhook_builder
                     .allow_organizer(organizer)
                     .expect("organizer filters were validated");
             }
             for event in webhook.allow_events {
-                webhook_config = webhook_config
+                webhook_builder = webhook_builder
                     .allow_event(event)
                     .expect("event filters were validated");
             }
             if !unauthenticated {
-                webhook_config = webhook_config.require_basic_auth(validated.credentials);
+                webhook_builder = webhook_builder.require_basic_auth(validated.credentials);
             }
 
             EffectiveEndpoint {
                 path: validated.path.expect("all routes were validated"),
-                webhook_config,
+                webhook_builder,
                 unrestricted,
                 unauthenticated,
             }
@@ -539,7 +542,7 @@ impl EffectiveConfig {
 #[derive(Clone, Debug)]
 pub struct EffectiveEndpoint {
     path: String,
-    webhook_config: WebhookConfig,
+    webhook_builder: WebhookServiceBuilder,
     unrestricted: bool,
     unauthenticated: bool,
 }
@@ -561,8 +564,8 @@ impl EffectiveEndpoint {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (String, WebhookConfig) {
-        (self.path, self.webhook_config)
+    pub fn into_parts(self) -> (String, WebhookServiceBuilder) {
+        (self.path, self.webhook_builder)
     }
 }
 
