@@ -3,7 +3,7 @@ resolver = "3"
 members = [ "crates/*" ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -11,8 +11,8 @@ repository = "https://github.com/sagikazarmark/pretix-webhook"
 homepage = "https://github.com/sagikazarmark/pretix-webhook"
 
 [workspace.dependencies]
-pretix-webhook = { path = "crates/pretix-webhook", version = "0.1.0", default-features = false }
-pretix-webhook-events = { path = "crates/pretix-webhook-events", version = "0.1.0" }
+pretix-webhook = { path = "crates/pretix-webhook", version = "0.2.0", default-features = false }
+pretix-webhook-events = { path = "crates/pretix-webhook-events", version = "0.2.0" }
 
 axum = { version = "0.8.4", default-features = false }
 base64 = "0.23.1"
