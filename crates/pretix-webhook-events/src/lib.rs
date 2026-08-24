@@ -55,7 +55,9 @@
 //!
 //! Both [`WebhookEvent`] and the individual payload types are
 //! [`Serialize`](serde::Serialize), so events can be re-emitted onto a queue or
-//! written to storage.
+//! written to storage. Each payload type also converts into its [`WebhookEvent`]
+//! variant through [`From`], so events can be built directly without naming the
+//! variant.
 //!
 //! # Routing without matching on the payload
 //!

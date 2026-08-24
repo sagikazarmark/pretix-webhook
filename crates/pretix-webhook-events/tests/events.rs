@@ -1,4 +1,8 @@
-use pretix_webhook_events::{WebhookEvent, WebhookEventKind};
+use std::collections::BTreeMap;
+
+use pretix_webhook_events::{
+    Notification, OrderEvent, UnknownEvent, WebhookEvent, WebhookEventKind,
+};
 
 #[test]
 fn deserializes_an_order_event() {
@@ -135,4 +139,38 @@ fn rejects_invalid_common_envelopes_and_malformed_known_payloads() {
             "invalid payload unexpectedly parsed: {input}"
         );
     }
+}
+
+#[test]
+fn wraps_payloads_into_their_webhook_event_variant() {
+    let order = OrderEvent {
+        notification: Notification {
+            notification_id: 7,
+            action: "pretix.event.order.paid".to_owned(),
+        },
+        organizer: "acme".to_owned(),
+        event: "demo".to_owned(),
+        code: "ABC23".to_owned(),
+    };
+    let unknown = UnknownEvent {
+        notification: Notification {
+            notification_id: 8,
+            action: "pretix.plugin.badge.printed".to_owned(),
+        },
+        fields: BTreeMap::from([("badge_id".to_owned(), serde_json::json!(123))]),
+    };
+
+    let event = WebhookEvent::from(order.clone());
+    assert_eq!(event, WebhookEvent::Order(order.clone()));
+    assert_eq!(event.kind(), WebhookEventKind::Order);
+    assert_eq!(event.as_order(), Some(&order));
+
+    let event: WebhookEvent = unknown.clone().into();
+    assert_eq!(event, WebhookEvent::Unknown(unknown));
+    assert_eq!(event.kind(), WebhookEventKind::Unknown);
+
+    // Constructing through `From` produces the same value as deserializing.
+    let parsed: WebhookEvent = serde_json::from_value(serde_json::to_value(&order).unwrap())
+        .expect("a serialized order payload should deserialize");
+    assert_eq!(parsed, WebhookEvent::from(order));
 }
