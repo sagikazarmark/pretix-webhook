@@ -192,6 +192,33 @@ impl WebhookEvent {
     }
 }
 
+/// Wraps each payload type in its [`WebhookEvent`] variant.
+macro_rules! from_payload {
+    ($($payload:ident => $variant:ident),* $(,)?) => {
+        $(
+            impl From<$payload> for WebhookEvent {
+                fn from(event: $payload) -> Self {
+                    Self::$variant(event)
+                }
+            }
+        )*
+    };
+}
+
+from_payload! {
+    OrderEvent => Order,
+    CheckinEvent => Checkin,
+    EventEvent => Event,
+    VoucherEvent => Voucher,
+    SubeventEvent => Subevent,
+    ItemEvent => Item,
+    WaitingListEvent => WaitingList,
+    CustomerEvent => Customer,
+    GiftCardEvent => GiftCard,
+    GiftCardTransactionEvent => GiftCardTransaction,
+    UnknownEvent => Unknown,
+}
+
 impl Serialize for WebhookEvent {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -226,41 +253,42 @@ impl<'de> Deserialize<'de> for WebhookEvent {
             .to_owned();
 
         match action.as_str() {
-            "pretix.event.checkin" | "pretix.event.checkin.reverted" => parse(value, Self::Checkin),
-            action if action.starts_with("pretix.event.order.") => parse(value, Self::Order),
+            "pretix.event.checkin" | "pretix.event.checkin.reverted" => {
+                parse::<CheckinEvent>(value)
+            }
+            action if action.starts_with("pretix.event.order.") => parse::<OrderEvent>(value),
             "pretix.event.added"
             | "pretix.event.changed"
             | "pretix.event.deleted"
             | "pretix.event.live.activated"
             | "pretix.event.live.deactivated"
             | "pretix.event.testmode.activated"
-            | "pretix.event.testmode.deactivated" => parse(value, Self::Event),
-            action if action.starts_with("pretix.voucher.") => parse(value, Self::Voucher),
-            action if action.starts_with("pretix.subevent.") => parse(value, Self::Subevent),
+            | "pretix.event.testmode.deactivated" => parse::<EventEvent>(value),
+            action if action.starts_with("pretix.voucher.") => parse::<VoucherEvent>(value),
+            action if action.starts_with("pretix.subevent.") => parse::<SubeventEvent>(value),
             action
                 if action.starts_with("pretix.event.item.")
                     || action.starts_with("pretix.event.quota.") =>
             {
-                parse(value, Self::Item)
+                parse::<ItemEvent>(value)
             }
             action if action.starts_with("pretix.event.orders.waitinglist.") => {
-                parse(value, Self::WaitingList)
+                parse::<WaitingListEvent>(value)
             }
-            action if action.starts_with("pretix.customer.") => parse(value, Self::Customer),
+            action if action.starts_with("pretix.customer.") => parse::<CustomerEvent>(value),
             action if action.starts_with("pretix.giftcards.transaction.") => {
-                parse(value, Self::GiftCardTransaction)
+                parse::<GiftCardTransactionEvent>(value)
             }
-            action if action.starts_with("pretix.giftcards.") => parse(value, Self::GiftCard),
-            _ => parse(value, Self::Unknown),
+            action if action.starts_with("pretix.giftcards.") => parse::<GiftCardEvent>(value),
+            _ => parse::<UnknownEvent>(value),
         }
         .map_err(serde::de::Error::custom)
     }
 }
 
-fn parse<T, F>(value: Value, wrap: F) -> serde_json::Result<WebhookEvent>
+fn parse<T>(value: Value) -> serde_json::Result<WebhookEvent>
 where
-    T: DeserializeOwned,
-    F: FnOnce(T) -> WebhookEvent,
+    T: DeserializeOwned + Into<WebhookEvent>,
 {
-    serde_json::from_value(value).map(wrap)
+    serde_json::from_value::<T>(value).map(Into::into)
 }
