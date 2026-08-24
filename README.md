@@ -1,5 +1,6 @@
 # pretix-webhook
 
+[![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/pretix-webhook/dagger.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/pretix-webhook/actions/workflows/dagger.yaml)
 [![openssf scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/pretix-webhook/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/pretix-webhook)
 [![crates.io](https://img.shields.io/crates/v/pretix-webhook?style=flat-square)](https://crates.io/crates/pretix-webhook)
 [![docs.rs](https://img.shields.io/docsrs/pretix-webhook?style=flat-square)](https://docs.rs/pretix-webhook)
