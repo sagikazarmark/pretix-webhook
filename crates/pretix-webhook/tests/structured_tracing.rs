@@ -238,7 +238,7 @@ async fn body_limit_rejections_emit_no_request_records() {
     })
     .await;
 
-    assert!(records.is_empty());
+    assert_eq!(records, [] as [serde_json::Value; 0]);
 }
 
 #[tokio::test]
