@@ -76,17 +76,6 @@ where
         let route = parts.uri.path().to_owned();
 
         Box::pin(async move {
-            let body = match Limited::new(body, policy.body_limit_bytes())
-                .collect()
-                .await
-            {
-                Ok(body) => body.to_bytes(),
-                Err(error) if error.is::<LengthLimitError>() => {
-                    return Ok(empty_response(StatusCode::PAYLOAD_TOO_LARGE));
-                }
-                Err(_) => return Ok(empty_response(StatusCode::BAD_REQUEST)),
-            };
-
             #[cfg(feature = "tracing")]
             let response = tracing::Instrument::instrument(
                 respond(policy, handler, parts.headers, body),
@@ -101,14 +90,18 @@ where
     }
 }
 
-async fn respond<H>(
+/// Authenticates the request headers before reading the body so that an
+/// unauthenticated request is rejected without buffering its payload.
+async fn respond<H, B>(
     policy: WebhookServiceBuilder,
     handler: Arc<H>,
     headers: HeaderMap,
-    body: Bytes,
+    body: B,
 ) -> WebhookResponse
 where
     H: WebhookHandler,
+    B: Body<Data = Bytes>,
+    B::Error: Into<BoxError>,
 {
     if !policy.authenticates(&headers) {
         #[cfg(feature = "tracing")]
@@ -120,6 +113,17 @@ where
         );
         return response;
     }
+
+    let body = match Limited::new(body, policy.body_limit_bytes())
+        .collect()
+        .await
+    {
+        Ok(body) => body.to_bytes(),
+        Err(error) if error.is::<LengthLimitError>() => {
+            return empty_response(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        Err(_) => return empty_response(StatusCode::BAD_REQUEST),
+    };
 
     let event = match serde_json::from_slice::<WebhookEvent>(&body) {
         Ok(event) => event,

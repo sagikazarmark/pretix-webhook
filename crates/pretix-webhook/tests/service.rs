@@ -1,8 +1,17 @@
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+};
 
 use axum::{Router, routing::post_service};
 use bytes::Bytes;
 use http::{Request, StatusCode};
+use http_body::{Body, Frame};
 use http_body_util::Full;
 use pretix_webhook::{BasicAuthCredential, WebhookHandler, WebhookServiceBuilder};
 use pretix_webhook_events::WebhookEvent;
@@ -90,10 +99,11 @@ async fn service_owns_authentication_and_body_limits() {
         .unwrap();
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
-    let oversized = service
-        .oneshot(request("/webhook", vec![b' '; 2 * 1024 * 1024 + 1]))
-        .await
-        .unwrap();
+    let mut oversized = request("/webhook", vec![b' '; 2 * 1024 * 1024 + 1]);
+    oversized
+        .headers_mut()
+        .insert("authorization", "Basic dXNlcjpzZWNyZXQ=".parse().unwrap());
+    let oversized = service.oneshot(oversized).await.unwrap();
     assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let lower_limit = WebhookServiceBuilder::new()
@@ -182,4 +192,74 @@ async fn caller_owned_axum_routes_can_mount_independent_services() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+/// A body that records whether the service polled it.
+struct PolledBody {
+    inner: Full<Bytes>,
+    polled: Arc<AtomicBool>,
+}
+
+impl Body for PolledBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.polled.store(true, Ordering::SeqCst);
+        Pin::new(&mut self.inner).poll_frame(context)
+    }
+}
+
+fn polled_request(authorization: Option<&str>) -> (Request<PolledBody>, Arc<AtomicBool>) {
+    let polled = Arc::new(AtomicBool::new(false));
+    let mut request = Request::post("/webhook")
+        .body(PolledBody {
+            inner: Full::new(Bytes::from_static(PAYLOAD.as_bytes())),
+            polled: Arc::clone(&polled),
+        })
+        .unwrap();
+    if let Some(authorization) = authorization {
+        request
+            .headers_mut()
+            .insert("authorization", authorization.parse().unwrap());
+    }
+    (request, polled)
+}
+
+#[tokio::test]
+async fn unauthenticated_requests_are_rejected_without_reading_the_body() {
+    let service = WebhookServiceBuilder::new()
+        .require_basic_auth([BasicAuthCredential::new("user", "secret")])
+        .build(RecordingHandler::default());
+
+    for authorization in [None, Some("Basic d3Jvbmc6d3Jvbmc="), Some("Bearer token")] {
+        let (request, polled) = polled_request(authorization);
+        let response = service.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get("www-authenticate").unwrap(),
+            "Basic realm=\"pretix-webhook\""
+        );
+        assert!(!polled.load(Ordering::SeqCst));
+    }
+
+    let (request, polled) = polled_request(Some("Basic dXNlcjpzZWNyZXQ="));
+    let response = service.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(polled.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn failed_authentication_takes_precedence_over_body_limits() {
+    let response = WebhookServiceBuilder::new()
+        .require_basic_auth([BasicAuthCredential::new("user", "secret")])
+        .body_limit(PAYLOAD.len() - 1)
+        .build(RecordingHandler::default())
+        .oneshot(request("/webhook", PAYLOAD))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

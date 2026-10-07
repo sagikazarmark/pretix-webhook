@@ -43,10 +43,12 @@
 //! # let _: Router = app;
 //! ```
 //!
-//! Authentication is checked before JSON parsing. Organizer and event filters
-//! are independent and exact. Organizer-level payloads consult only the
-//! organizer filter; an event-level payload with an unreadable event slug fails
-//! a configured event filter.
+//! Authentication is checked before the request body is read, so
+//! unauthenticated requests are rejected without buffering their payload, and
+//! a failed authentication takes precedence over body errors. Organizer and
+//! event filters are independent and exact. Organizer-level payloads consult
+//! only the organizer filter; an event-level payload with an unreadable event
+//! slug fails a configured event filter.
 //!
 //! The service returns `204` on success, `400` for malformed payloads, `401`
 //! for failed authentication, `404` for filtered events, `413` when the request
